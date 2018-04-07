@@ -4,20 +4,28 @@ logs
 node_modules
 /dist
 /webapp/dist
+jobserver
 npm-debug.log
+webapp/yarn-error.log
+mattermost.mattermost-license
+config/mattermost.mattermost-license
+config/config.json
 
 web/static/js/bundle*.js
 web/static/js/bundle*.js.map
 web/static/js/libs*.js
 
 config/active.dat
+config/config.json
+/plugins
 
 # Enteprise imports file
-imports.go
+imports/imports.go
 
 # Build Targets
 .prebuild
 .npminstall
+.yarninstall
 
 # Compiled Object files, Static and Dynamic libs (Shared Objects)
 *.o
@@ -27,6 +35,7 @@ imports.go
 # Folders
 _obj
 _test
+.vscode
 
 # Architecture specific extensions/prefixes
 [568vq].out
@@ -45,6 +54,7 @@ _testmain.go
 
 # Log files
 *mattermost.log
+*mattermost.log.jsonl
 *npm-debug.log*
 
 .tmp
@@ -57,6 +67,9 @@ Session.vim
 .netrwhist
 *~
 
+# Gogland project files
+mattermost-server.iml
+
 # Build files
 *bundle.js
 
@@ -67,13 +80,23 @@ web/sass-files/sass/.sass-cache/
 
 # Default local file storage
 data/*
+webapp/data/*
 api/data/*
+api4/data/*
+app/data/*
 
 enterprise
 
 cover.out
 ecover.out
+cprofile.out
+*.test
+webapp/coverage
 
 .agignore
 .ctags
 tags
+.idea
+
+debug
+client

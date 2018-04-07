@@ -1,38 +1,45 @@
-// Copyright (c) 2015 Mattermost, Inc. All Rights Reserved.
+// Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See License.txt for license information.
 
 package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"reflect"
 	"strings"
 
-	"fmt"
 	"testing"
 	"time"
 
-	"github.com/mattermost/platform/model"
-	"github.com/mattermost/platform/utils"
+	"github.com/mattermost/mattermost-server/app"
+	"github.com/mattermost/mattermost-server/model"
+	"github.com/mattermost/mattermost-server/store"
+	"github.com/mattermost/mattermost-server/utils"
 )
 
 func TestCreatePost(t *testing.T) {
 	th := Setup().InitBasic()
+	defer th.TearDown()
+
 	Client := th.BasicClient
 	team := th.BasicTeam
 	team2 := th.CreateTeam(th.BasicClient)
-	user1 := th.BasicUser
 	user3 := th.CreateUser(th.BasicClient)
-	LinkUserToTeam(user3, team2)
+	th.LinkUserToTeam(user3, team2)
 	channel1 := th.BasicChannel
 	channel2 := th.CreateChannel(Client, team)
 
-	filenames := []string{"/12345678901234567890123456/12345678901234567890123456/12345678901234567890123456/test.png", "/" + channel1.Id + "/" + user1.Id + "/test.png", "www.mattermost.com/fake/url", "junk"}
+	th.InitSystemAdmin()
+	AdminClient := th.SystemAdminClient
+	adminTeam := th.SystemAdminTeam
+	adminUser := th.CreateUser(th.SystemAdminClient)
+	th.LinkUserToTeam(adminUser, adminTeam)
 
-	post1 := &model.Post{ChannelId: channel1.Id, Message: "#hashtag a" + model.NewId() + "a", Filenames: filenames}
+	post1 := &model.Post{ChannelId: channel1.Id, Message: "#hashtag a" + model.NewId() + "a", Props: model.StringInterface{model.PROPS_ADD_CHANNEL_MEMBER: "no good"}}
 	rpost1, err := Client.CreatePost(post1)
 	if err != nil {
 		t.Fatal(err)
@@ -46,44 +53,57 @@ func TestCreatePost(t *testing.T) {
 		t.Fatal("hashtag didn't match")
 	}
 
-	if len(rpost1.Data.(*model.Post).Filenames) != 2 {
-		t.Fatal("filenames didn't parse correctly")
+	if len(rpost1.Data.(*model.Post).FileIds) != 0 {
+		t.Fatal("shouldn't have files")
 	}
 
-	post2 := &model.Post{ChannelId: channel1.Id, Message: "a" + model.NewId() + "a", RootId: rpost1.Data.(*model.Post).Id}
+	if rpost1.Data.(*model.Post).EditAt != 0 {
+		t.Fatal("Newly craeted post shouldn't have EditAt set")
+	}
+
+	if rpost1.Data.(*model.Post).Props[model.PROPS_ADD_CHANNEL_MEMBER] != nil {
+		t.Fatal("newly created post shouldn't have Props['add_channel_member'] set")
+	}
+
+	_, err = Client.CreatePost(&model.Post{ChannelId: channel1.Id, Message: "#hashtag a" + model.NewId() + "a", Type: model.POST_SYSTEM_GENERIC})
+	if err == nil {
+		t.Fatal("should have failed - bad post type")
+	}
+
+	post2 := &model.Post{ChannelId: channel1.Id, Message: "zz" + model.NewId() + "a", RootId: rpost1.Data.(*model.Post).Id}
 	rpost2, err := Client.CreatePost(post2)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	post3 := &model.Post{ChannelId: channel1.Id, Message: "a" + model.NewId() + "a", RootId: rpost1.Data.(*model.Post).Id, ParentId: rpost2.Data.(*model.Post).Id}
+	post3 := &model.Post{ChannelId: channel1.Id, Message: "zz" + model.NewId() + "a", RootId: rpost1.Data.(*model.Post).Id, ParentId: rpost2.Data.(*model.Post).Id}
 	_, err = Client.CreatePost(post3)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	post4 := &model.Post{ChannelId: channel1.Id, Message: "a" + model.NewId() + "a", RootId: "junk"}
+	post4 := &model.Post{ChannelId: channel1.Id, Message: "zz" + model.NewId() + "a", RootId: "junk"}
 	_, err = Client.CreatePost(post4)
 	if err.StatusCode != http.StatusBadRequest {
 		t.Fatal("Should have been invalid param")
 	}
 
-	post5 := &model.Post{ChannelId: channel1.Id, Message: "a" + model.NewId() + "a", RootId: rpost1.Data.(*model.Post).Id, ParentId: "junk"}
+	post5 := &model.Post{ChannelId: channel1.Id, Message: "zz" + model.NewId() + "a", RootId: rpost1.Data.(*model.Post).Id, ParentId: "junk"}
 	_, err = Client.CreatePost(post5)
 	if err.StatusCode != http.StatusBadRequest {
 		t.Fatal("Should have been invalid param")
 	}
 
-	post1c2 := &model.Post{ChannelId: channel2.Id, Message: "a" + model.NewId() + "a"}
+	post1c2 := &model.Post{ChannelId: channel2.Id, Message: "zz" + model.NewId() + "a"}
 	rpost1c2, err := Client.CreatePost(post1c2)
 
-	post2c2 := &model.Post{ChannelId: channel1.Id, Message: "a" + model.NewId() + "a", RootId: rpost1c2.Data.(*model.Post).Id}
+	post2c2 := &model.Post{ChannelId: channel1.Id, Message: "zz" + model.NewId() + "a", RootId: rpost1c2.Data.(*model.Post).Id}
 	_, err = Client.CreatePost(post2c2)
 	if err.StatusCode != http.StatusBadRequest {
 		t.Fatal("Should have been invalid param")
 	}
 
-	post6 := &model.Post{ChannelId: "junk", Message: "a" + model.NewId() + "a"}
+	post6 := &model.Post{ChannelId: "junk", Message: "zz" + model.NewId() + "a"}
 	_, err = Client.CreatePost(post6)
 	if err.StatusCode != http.StatusForbidden {
 		t.Fatal("Should have been forbidden")
@@ -91,7 +111,7 @@ func TestCreatePost(t *testing.T) {
 
 	th.LoginBasic2()
 
-	post7 := &model.Post{ChannelId: channel1.Id, Message: "a" + model.NewId() + "a"}
+	post7 := &model.Post{ChannelId: channel1.Id, Message: "zz" + model.NewId() + "a"}
 	_, err = Client.CreatePost(post7)
 	if err.StatusCode != http.StatusForbidden {
 		t.Fatal("Should have been forbidden")
@@ -101,7 +121,7 @@ func TestCreatePost(t *testing.T) {
 	Client.SetTeamId(team2.Id)
 	channel3 := th.CreateChannel(Client, team2)
 
-	post8 := &model.Post{ChannelId: channel1.Id, Message: "a" + model.NewId() + "a"}
+	post8 := &model.Post{ChannelId: channel1.Id, Message: "zz" + model.NewId() + "a"}
 	_, err = Client.CreatePost(post8)
 	if err.StatusCode != http.StatusForbidden {
 		t.Fatal("Should have been forbidden")
@@ -110,24 +130,109 @@ func TestCreatePost(t *testing.T) {
 	if _, err = Client.DoApiPost("/channels/"+channel3.Id+"/create", "garbage"); err == nil {
 		t.Fatal("should have been an error")
 	}
+
+	fileIds := make([]string, 4)
+	if data, err := readTestFile("test.png"); err != nil {
+		t.Fatal(err)
+	} else {
+		for i := 0; i < 3; i++ {
+			fileIds[i] = Client.MustGeneric(Client.UploadPostAttachment(data, channel3.Id, "test.png")).(*model.FileUploadResponse).FileInfos[0].Id
+		}
+	}
+
+	// Make sure duplicated file ids are removed
+	fileIds[3] = fileIds[0]
+
+	post9 := &model.Post{
+		ChannelId: channel3.Id,
+		Message:   "test",
+		FileIds:   fileIds,
+	}
+	if resp, err := Client.CreatePost(post9); err != nil {
+		t.Fatal(err)
+	} else if rpost9 := resp.Data.(*model.Post); len(rpost9.FileIds) != 3 {
+		t.Fatal("post should have 3 files")
+	} else {
+		infos := store.Must(th.App.Srv.Store.FileInfo().GetForPost(rpost9.Id, true, true)).([]*model.FileInfo)
+
+		if len(infos) != 3 {
+			t.Fatal("should've attached all 3 files to post")
+		}
+	}
+
+	th.App.UpdateConfig(func(cfg *model.Config) { *cfg.TeamSettings.ExperimentalTownSquareIsReadOnly = true })
+	th.App.SetLicense(model.NewTestLicense())
+
+	defaultChannel := store.Must(th.App.Srv.Store.Channel().GetByName(team.Id, model.DEFAULT_CHANNEL, true)).(*model.Channel)
+	defaultPost := &model.Post{
+		ChannelId: defaultChannel.Id,
+		Message:   "Default Channel Post",
+	}
+	if _, err = Client.CreatePost(defaultPost); err == nil {
+		t.Fatal("should have failed -- ExperimentalTownSquareIsReadOnly is true and it's a read only channel")
+	}
+
+	adminDefaultChannel := store.Must(th.App.Srv.Store.Channel().GetByName(adminTeam.Id, model.DEFAULT_CHANNEL, true)).(*model.Channel)
+	adminDefaultPost := &model.Post{
+		ChannelId: adminDefaultChannel.Id,
+		Message:   "Admin Default Channel Post",
+	}
+	if _, err = AdminClient.CreatePost(adminDefaultPost); err != nil {
+		t.Fatal("should not have failed -- ExperimentalTownSquareIsReadOnly is true and admin can post to channel")
+	}
+}
+
+func TestCreatePostWithCreateAt(t *testing.T) {
+
+	// An ordinary user cannot use CreateAt
+
+	th := Setup().InitBasic()
+	defer th.TearDown()
+
+	Client := th.BasicClient
+	channel1 := th.BasicChannel
+
+	post := &model.Post{
+		ChannelId: channel1.Id,
+		Message:   "PLT-4349",
+		CreateAt:  1234,
+	}
+	if resp, err := Client.CreatePost(post); err != nil {
+		t.Fatal(err)
+	} else if rpost := resp.Data.(*model.Post); rpost.CreateAt == post.CreateAt {
+		t.Fatal("post should be created with default CreateAt timestamp for ordinary user")
+	}
+
+	// But a System Admin user can
+
+	th.InitSystemAdmin()
+	SysClient := th.SystemAdminClient
+
+	if resp, err := SysClient.CreatePost(post); err != nil {
+		t.Fatal(err)
+	} else if rpost := resp.Data.(*model.Post); rpost.CreateAt != post.CreateAt {
+		t.Fatal("post should be created with provided CreateAt timestamp for System Admin user")
+	}
 }
 
 func testCreatePostWithOutgoingHook(
 	t *testing.T,
-	hookContentType string,
-	expectedContentType string,
+	hookContentType, expectedContentType, message, triggerWord string,
+	fileIds []string,
+	triggerWhen int,
 ) {
 	th := Setup().InitSystemAdmin()
+	defer th.TearDown()
+
 	Client := th.SystemAdminClient
 	team := th.SystemAdminTeam
 	user := th.SystemAdminUser
 	channel := th.CreateChannel(Client, team)
 
-	enableOutgoingHooks := utils.Cfg.ServiceSettings.EnableOutgoingWebhooks
-	defer func() {
-		utils.Cfg.ServiceSettings.EnableOutgoingWebhooks = enableOutgoingHooks
-	}()
-	utils.Cfg.ServiceSettings.EnableOutgoingWebhooks = true
+	th.App.UpdateConfig(func(cfg *model.Config) {
+		cfg.ServiceSettings.EnableOutgoingWebhooks = true
+		*cfg.ServiceSettings.AllowedUntrustedInternalConnections = "localhost 127.0.0.1"
+	})
 
 	var hook *model.OutgoingWebhook
 	var post *model.Post
@@ -158,7 +263,8 @@ func testCreatePostWithOutgoingHook(
 			UserName:    user.Username,
 			PostId:      post.Id,
 			Text:        post.Message,
-			TriggerWord: strings.Fields(post.Message)[0],
+			TriggerWord: triggerWord,
+			FileIds:     strings.Join(post.FileIds, ","),
 		}
 
 		// depending on the Content-Type, we expect to find a JSON or form encoded payload
@@ -188,16 +294,31 @@ func testCreatePostWithOutgoingHook(
 			}
 		}
 
+		resp := &model.OutgoingWebhookResponse{}
+		resp.Text = model.NewString("some test text")
+		resp.Username = "testusername"
+		resp.IconURL = "http://www.mattermost.org/wp-content/uploads/2016/04/icon.png"
+		resp.Props = map[string]interface{}{"someprop": "somevalue"}
+		resp.Type = "custom_test"
+
+		w.Write([]byte(resp.ToJson()))
+
 		success <- true
 	}))
 	defer ts.Close()
 
 	// create an outgoing webhook, passing it the test server URL
-	triggerWord := "bingo"
+	var triggerWords []string
+	if triggerWord != "" {
+		triggerWords = []string{triggerWord}
+	}
+
 	hook = &model.OutgoingWebhook{
 		ChannelId:    channel.Id,
+		TeamId:       team.Id,
 		ContentType:  hookContentType,
-		TriggerWords: []string{triggerWord},
+		TriggerWords: triggerWords,
+		TriggerWhen:  triggerWhen,
 		CallbackURLs: []string{ts.URL},
 	}
 
@@ -208,10 +329,10 @@ func testCreatePostWithOutgoingHook(
 	}
 
 	// create a post to trigger the webhook
-	message := triggerWord + " lorem ipusm"
 	post = &model.Post{
 		ChannelId: channel.Id,
 		Message:   message,
+		FileIds:   fileIds,
 	}
 
 	if result, err := Client.CreatePost(post); err != nil {
@@ -227,33 +348,53 @@ func testCreatePostWithOutgoingHook(
 	select {
 	case ok := <-success:
 		if !ok {
-			t.Fatal("Test server was sent an invalid webhook.")
+			t.Fatal("Test server did send an invalid webhook.")
 		}
 	case <-time.After(time.Second):
-		t.Fatal("Timeout, test server wasn't sent the webhook.")
+		t.Fatal("Timeout, test server did not send the webhook.")
 	}
 }
 
 func TestCreatePostWithOutgoingHook_form_urlencoded(t *testing.T) {
-	testCreatePostWithOutgoingHook(t, "application/x-www-form-urlencoded", "application/x-www-form-urlencoded")
+	testCreatePostWithOutgoingHook(t, "application/x-www-form-urlencoded", "application/x-www-form-urlencoded", "triggerword lorem ipsum", "triggerword", []string{"file_id_1"}, app.TRIGGERWORDS_EXACT_MATCH)
+	testCreatePostWithOutgoingHook(t, "application/x-www-form-urlencoded", "application/x-www-form-urlencoded", "triggerwordaaazzz lorem ipsum", "triggerword", []string{"file_id_1"}, app.TRIGGERWORDS_STARTS_WITH)
+	testCreatePostWithOutgoingHook(t, "application/x-www-form-urlencoded", "application/x-www-form-urlencoded", "", "", []string{"file_id_1"}, app.TRIGGERWORDS_EXACT_MATCH)
+	testCreatePostWithOutgoingHook(t, "application/x-www-form-urlencoded", "application/x-www-form-urlencoded", "", "", []string{"file_id_1"}, app.TRIGGERWORDS_STARTS_WITH)
 }
 
 func TestCreatePostWithOutgoingHook_json(t *testing.T) {
-	testCreatePostWithOutgoingHook(t, "application/json", "application/json")
+	testCreatePostWithOutgoingHook(t, "application/json", "application/json", "triggerword lorem ipsum", "triggerword", []string{"file_id_1, file_id_2"}, app.TRIGGERWORDS_EXACT_MATCH)
+	testCreatePostWithOutgoingHook(t, "application/json", "application/json", "triggerwordaaazzz lorem ipsum", "triggerword", []string{"file_id_1, file_id_2"}, app.TRIGGERWORDS_STARTS_WITH)
+	testCreatePostWithOutgoingHook(t, "application/json", "application/json", "triggerword lorem ipsum", "", []string{"file_id_1"}, app.TRIGGERWORDS_EXACT_MATCH)
+	testCreatePostWithOutgoingHook(t, "application/json", "application/json", "triggerwordaaazzz lorem ipsum", "", []string{"file_id_1"}, app.TRIGGERWORDS_STARTS_WITH)
 }
 
 // hooks created before we added the ContentType field should be considered as
 // application/x-www-form-urlencoded
 func TestCreatePostWithOutgoingHook_no_content_type(t *testing.T) {
-	testCreatePostWithOutgoingHook(t, "", "application/x-www-form-urlencoded")
+	testCreatePostWithOutgoingHook(t, "", "application/x-www-form-urlencoded", "triggerword lorem ipsum", "triggerword", []string{"file_id_1"}, app.TRIGGERWORDS_EXACT_MATCH)
+	testCreatePostWithOutgoingHook(t, "", "application/x-www-form-urlencoded", "triggerwordaaazzz lorem ipsum", "triggerword", []string{"file_id_1"}, app.TRIGGERWORDS_STARTS_WITH)
+	testCreatePostWithOutgoingHook(t, "", "application/x-www-form-urlencoded", "triggerword lorem ipsum", "", []string{"file_id_1, file_id_2"}, app.TRIGGERWORDS_EXACT_MATCH)
+	testCreatePostWithOutgoingHook(t, "", "application/x-www-form-urlencoded", "triggerwordaaazzz lorem ipsum", "", []string{"file_id_1, file_id_2"}, app.TRIGGERWORDS_STARTS_WITH)
 }
 
 func TestUpdatePost(t *testing.T) {
 	th := Setup().InitBasic()
+	defer th.TearDown()
+
 	Client := th.BasicClient
 	channel1 := th.BasicChannel
 
-	post1 := &model.Post{ChannelId: channel1.Id, Message: "a" + model.NewId() + "a"}
+	// Check the appropriate permissions are enforced.
+	defaultRolePermissions := th.SaveDefaultRolePermissions()
+	defer func() {
+		th.RestoreDefaultRolePermissions(defaultRolePermissions)
+	}()
+	th.App.SetLicense(model.NewTestLicense())
+
+	th.AddPermissionToRole(model.PERMISSION_EDIT_POST.Id, model.CHANNEL_USER_ROLE_ID)
+
+	post1 := &model.Post{ChannelId: channel1.Id, Message: "zz" + model.NewId() + "a"}
 	rpost1, err := Client.CreatePost(post1)
 	if err != nil {
 		t.Fatal(err)
@@ -263,19 +404,30 @@ func TestUpdatePost(t *testing.T) {
 		t.Fatal("full name didn't match")
 	}
 
-	post2 := &model.Post{ChannelId: channel1.Id, Message: "a" + model.NewId() + "a", RootId: rpost1.Data.(*model.Post).Id}
+	post2 := &model.Post{ChannelId: channel1.Id, Message: "zz" + model.NewId() + "a", RootId: rpost1.Data.(*model.Post).Id}
 	rpost2, err := Client.CreatePost(post2)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	msg2 := "a" + model.NewId() + " update post 1"
+	if rpost2.Data.(*model.Post).EditAt != 0 {
+		t.Fatal("Newly craeted post shouldn't have EditAt set")
+	}
+
+	msg2 := "zz" + model.NewId() + " update post 1"
 	rpost2.Data.(*model.Post).Message = msg2
+	rpost2.Data.(*model.Post).Props[model.PROPS_ADD_CHANNEL_MEMBER] = "no good"
 	if rupost2, err := Client.UpdatePost(rpost2.Data.(*model.Post)); err != nil {
 		t.Fatal(err)
 	} else {
 		if rupost2.Data.(*model.Post).Message != msg2 {
 			t.Fatal("failed to updates")
+		}
+		if rupost2.Data.(*model.Post).EditAt == 0 {
+			t.Fatal("EditAt not updated for post")
+		}
+		if rupost2.Data.(*model.Post).Props[model.PROPS_ADD_CHANNEL_MEMBER] != nil {
+			t.Fatal("failed to sanitize Props['add_channel_member'], should be nil")
 		}
 	}
 
@@ -289,7 +441,7 @@ func TestUpdatePost(t *testing.T) {
 		}
 	}
 
-	up12 := &model.Post{Id: rpost1.Data.(*model.Post).Id, ChannelId: channel1.Id, Message: "a" + model.NewId() + " updaet post 1 update 2"}
+	up12 := &model.Post{Id: rpost1.Data.(*model.Post).Id, ChannelId: channel1.Id, Message: "zz" + model.NewId() + " updaet post 1 update 2"}
 	if rup12, err := Client.UpdatePost(up12); err != nil {
 		t.Fatal(err)
 	} else {
@@ -298,41 +450,82 @@ func TestUpdatePost(t *testing.T) {
 		}
 	}
 
-	post3 := &model.Post{ChannelId: channel1.Id, Message: "a" + model.NewId() + "a", Type: model.POST_JOIN_LEAVE}
-	rpost3, err := Client.CreatePost(post3)
+	rpost3, err := th.App.CreatePost(&model.Post{ChannelId: channel1.Id, Message: "zz" + model.NewId() + "a", Type: model.POST_JOIN_LEAVE, UserId: th.BasicUser.Id}, channel1, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	up3 := &model.Post{Id: rpost3.Data.(*model.Post).Id, ChannelId: channel1.Id, Message: "a" + model.NewId() + " update post 3"}
+	up3 := &model.Post{Id: rpost3.Id, ChannelId: channel1.Id, Message: "zz" + model.NewId() + " update post 3"}
 	if _, err := Client.UpdatePost(up3); err == nil {
 		t.Fatal("shouldn't have been able to update system message")
+	}
+
+	// Test licensed policy controls for edit post
+	th.RemovePermissionFromRole(model.PERMISSION_EDIT_POST.Id, model.CHANNEL_USER_ROLE_ID)
+
+	post4 := &model.Post{ChannelId: channel1.Id, Message: "zz" + model.NewId() + "a", RootId: rpost1.Data.(*model.Post).Id}
+	rpost4, err := Client.CreatePost(post4)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	up4 := &model.Post{Id: rpost4.Data.(*model.Post).Id, ChannelId: channel1.Id, Message: "zz" + model.NewId() + " update post 4"}
+	if _, err := Client.UpdatePost(up4); err == nil {
+		t.Fatal("shouldn't have been able to update a message when not allowed")
+	}
+
+	th.AddPermissionToRole(model.PERMISSION_EDIT_POST.Id, model.CHANNEL_USER_ROLE_ID)
+	th.App.UpdateConfig(func(cfg *model.Config) { *cfg.ServiceSettings.PostEditTimeLimit = 1 }) //seconds
+
+	post5 := &model.Post{ChannelId: channel1.Id, Message: "zz" + model.NewId() + "a", RootId: rpost1.Data.(*model.Post).Id}
+	rpost5, err := Client.CreatePost(post5)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	msg5 := "zz" + model.NewId() + " update post 5"
+	up5 := &model.Post{Id: rpost5.Data.(*model.Post).Id, ChannelId: channel1.Id, Message: msg5}
+	if rup5, err := Client.UpdatePost(up5); err != nil {
+		t.Fatal(err)
+	} else {
+		if rup5.Data.(*model.Post).Message != up5.Message {
+			t.Fatal("failed to updates")
+		}
+	}
+
+	time.Sleep(1000 * time.Millisecond)
+
+	up6 := &model.Post{Id: rpost5.Data.(*model.Post).Id, ChannelId: channel1.Id, Message: "zz" + model.NewId() + " update post 5"}
+	if _, err := Client.UpdatePost(up6); err == nil {
+		t.Fatal("shouldn't have been able to update a message after time limit")
 	}
 }
 
 func TestGetPosts(t *testing.T) {
 	th := Setup().InitBasic()
+	defer th.TearDown()
+
 	Client := th.BasicClient
 	channel1 := th.BasicChannel
 
 	time.Sleep(10 * time.Millisecond)
-	post1 := &model.Post{ChannelId: channel1.Id, Message: "a" + model.NewId() + "a"}
+	post1 := &model.Post{ChannelId: channel1.Id, Message: "zz" + model.NewId() + "a"}
 	post1 = Client.Must(Client.CreatePost(post1)).Data.(*model.Post)
 
 	time.Sleep(10 * time.Millisecond)
-	post1a1 := &model.Post{ChannelId: channel1.Id, Message: "a" + model.NewId() + "a", RootId: post1.Id}
+	post1a1 := &model.Post{ChannelId: channel1.Id, Message: "zz" + model.NewId() + "a", RootId: post1.Id}
 	post1a1 = Client.Must(Client.CreatePost(post1a1)).Data.(*model.Post)
 
 	time.Sleep(10 * time.Millisecond)
-	post2 := &model.Post{ChannelId: channel1.Id, Message: "a" + model.NewId() + "a"}
+	post2 := &model.Post{ChannelId: channel1.Id, Message: "zz" + model.NewId() + "a"}
 	post2 = Client.Must(Client.CreatePost(post2)).Data.(*model.Post)
 
 	time.Sleep(10 * time.Millisecond)
-	post3 := &model.Post{ChannelId: channel1.Id, Message: "a" + model.NewId() + "a"}
+	post3 := &model.Post{ChannelId: channel1.Id, Message: "zz" + model.NewId() + "a"}
 	post3 = Client.Must(Client.CreatePost(post3)).Data.(*model.Post)
 
 	time.Sleep(10 * time.Millisecond)
-	post3a1 := &model.Post{ChannelId: channel1.Id, Message: "a" + model.NewId() + "a", RootId: post3.Id}
+	post3a1 := &model.Post{ChannelId: channel1.Id, Message: "zz" + model.NewId() + "a", RootId: post3.Id}
 	post3a1 = Client.Must(Client.CreatePost(post3a1)).Data.(*model.Post)
 
 	r1 := Client.Must(Client.GetPosts(channel1.Id, 0, 2, "")).Data.(*model.PostList)
@@ -367,31 +560,33 @@ func TestGetPosts(t *testing.T) {
 
 func TestGetPostsSince(t *testing.T) {
 	th := Setup().InitBasic()
+	defer th.TearDown()
+
 	Client := th.BasicClient
 	channel1 := th.BasicChannel
 
 	time.Sleep(10 * time.Millisecond)
-	post0 := &model.Post{ChannelId: channel1.Id, Message: "a" + model.NewId() + "a"}
+	post0 := &model.Post{ChannelId: channel1.Id, Message: "zz" + model.NewId() + "a"}
 	post0 = Client.Must(Client.CreatePost(post0)).Data.(*model.Post)
 
 	time.Sleep(10 * time.Millisecond)
-	post1 := &model.Post{ChannelId: channel1.Id, Message: "a" + model.NewId() + "a"}
+	post1 := &model.Post{ChannelId: channel1.Id, Message: "zz" + model.NewId() + "a"}
 	post1 = Client.Must(Client.CreatePost(post1)).Data.(*model.Post)
 
 	time.Sleep(10 * time.Millisecond)
-	post1a1 := &model.Post{ChannelId: channel1.Id, Message: "a" + model.NewId() + "a", RootId: post1.Id}
+	post1a1 := &model.Post{ChannelId: channel1.Id, Message: "zz" + model.NewId() + "a", RootId: post1.Id}
 	post1a1 = Client.Must(Client.CreatePost(post1a1)).Data.(*model.Post)
 
 	time.Sleep(10 * time.Millisecond)
-	post2 := &model.Post{ChannelId: channel1.Id, Message: "a" + model.NewId() + "a"}
+	post2 := &model.Post{ChannelId: channel1.Id, Message: "zz" + model.NewId() + "a"}
 	post2 = Client.Must(Client.CreatePost(post2)).Data.(*model.Post)
 
 	time.Sleep(10 * time.Millisecond)
-	post3 := &model.Post{ChannelId: channel1.Id, Message: "a" + model.NewId() + "a"}
+	post3 := &model.Post{ChannelId: channel1.Id, Message: "zz" + model.NewId() + "a"}
 	post3 = Client.Must(Client.CreatePost(post3)).Data.(*model.Post)
 
 	time.Sleep(10 * time.Millisecond)
-	post3a1 := &model.Post{ChannelId: channel1.Id, Message: "a" + model.NewId() + "a", RootId: post3.Id}
+	post3a1 := &model.Post{ChannelId: channel1.Id, Message: "zz" + model.NewId() + "a", RootId: post3.Id}
 	post3a1 = Client.Must(Client.CreatePost(post3a1)).Data.(*model.Post)
 
 	r1 := Client.Must(Client.GetPostsSince(channel1.Id, post1.CreateAt)).Data.(*model.PostList)
@@ -427,31 +622,33 @@ func TestGetPostsSince(t *testing.T) {
 
 func TestGetPostsBeforeAfter(t *testing.T) {
 	th := Setup().InitBasic()
+	defer th.TearDown()
+
 	Client := th.BasicClient
 	channel1 := th.BasicChannel
 
 	time.Sleep(10 * time.Millisecond)
-	post0 := &model.Post{ChannelId: channel1.Id, Message: "a" + model.NewId() + "a"}
+	post0 := &model.Post{ChannelId: channel1.Id, Message: "zz" + model.NewId() + "a"}
 	post0 = Client.Must(Client.CreatePost(post0)).Data.(*model.Post)
 
 	time.Sleep(10 * time.Millisecond)
-	post1 := &model.Post{ChannelId: channel1.Id, Message: "a" + model.NewId() + "a"}
+	post1 := &model.Post{ChannelId: channel1.Id, Message: "zz" + model.NewId() + "a"}
 	post1 = Client.Must(Client.CreatePost(post1)).Data.(*model.Post)
 
 	time.Sleep(10 * time.Millisecond)
-	post1a1 := &model.Post{ChannelId: channel1.Id, Message: "a" + model.NewId() + "a", RootId: post1.Id}
+	post1a1 := &model.Post{ChannelId: channel1.Id, Message: "zz" + model.NewId() + "a", RootId: post1.Id}
 	post1a1 = Client.Must(Client.CreatePost(post1a1)).Data.(*model.Post)
 
 	time.Sleep(10 * time.Millisecond)
-	post2 := &model.Post{ChannelId: channel1.Id, Message: "a" + model.NewId() + "a"}
+	post2 := &model.Post{ChannelId: channel1.Id, Message: "zz" + model.NewId() + "a"}
 	post2 = Client.Must(Client.CreatePost(post2)).Data.(*model.Post)
 
 	time.Sleep(10 * time.Millisecond)
-	post3 := &model.Post{ChannelId: channel1.Id, Message: "a" + model.NewId() + "a"}
+	post3 := &model.Post{ChannelId: channel1.Id, Message: "zz" + model.NewId() + "a"}
 	post3 = Client.Must(Client.CreatePost(post3)).Data.(*model.Post)
 
 	time.Sleep(10 * time.Millisecond)
-	post3a1 := &model.Post{ChannelId: channel1.Id, Message: "a" + model.NewId() + "a", RootId: post3.Id}
+	post3a1 := &model.Post{ChannelId: channel1.Id, Message: "zz" + model.NewId() + "a", RootId: post3.Id}
 	post3a1 = Client.Must(Client.CreatePost(post3a1)).Data.(*model.Post)
 
 	r1 := Client.Must(Client.GetPostsBefore(channel1.Id, post1a1.Id, 0, 10, "")).Data.(*model.PostList)
@@ -464,8 +661,8 @@ func TestGetPostsBeforeAfter(t *testing.T) {
 		t.Fatal("wrong order")
 	}
 
-	if len(r1.Posts) != 3 {
-		t.Log(r1.Posts)
+	// including created post from test helper and system 'joined' message
+	if len(r1.Posts) != 4 {
 		t.Fatal("wrong size")
 	}
 
@@ -495,6 +692,8 @@ func TestGetPostsBeforeAfter(t *testing.T) {
 
 func TestSearchPosts(t *testing.T) {
 	th := Setup().InitBasic()
+	defer th.TearDown()
+
 	Client := th.BasicClient
 	channel1 := th.BasicChannel
 
@@ -541,6 +740,8 @@ func TestSearchPosts(t *testing.T) {
 
 func TestSearchHashtagPosts(t *testing.T) {
 	th := Setup().InitBasic()
+	defer th.TearDown()
+
 	Client := th.BasicClient
 	channel1 := th.BasicChannel
 
@@ -562,6 +763,8 @@ func TestSearchHashtagPosts(t *testing.T) {
 
 func TestSearchPostsInChannel(t *testing.T) {
 	th := Setup().InitBasic()
+	defer th.TearDown()
+
 	Client := th.BasicClient
 	channel1 := th.BasicChannel
 	team := th.BasicTeam
@@ -569,10 +772,10 @@ func TestSearchPostsInChannel(t *testing.T) {
 	post1 := &model.Post{ChannelId: channel1.Id, Message: "sgtitlereview with space"}
 	post1 = Client.Must(Client.CreatePost(post1)).Data.(*model.Post)
 
-	channel2 := &model.Channel{DisplayName: "TestGetPosts", Name: "a" + model.NewId() + "a", Type: model.CHANNEL_OPEN, TeamId: team.Id}
+	channel2 := &model.Channel{DisplayName: "TestGetPosts", Name: "zz" + model.NewId() + "a", Type: model.CHANNEL_OPEN, TeamId: team.Id}
 	channel2 = Client.Must(Client.CreateChannel(channel2)).Data.(*model.Channel)
 
-	channel3 := &model.Channel{DisplayName: "TestGetPosts", Name: "a" + model.NewId() + "a", Type: model.CHANNEL_OPEN, TeamId: team.Id}
+	channel3 := &model.Channel{DisplayName: "TestGetPosts", Name: "zz" + model.NewId() + "a", Type: model.CHANNEL_OPEN, TeamId: team.Id}
 	channel3 = Client.Must(Client.CreateChannel(channel3)).Data.(*model.Channel)
 
 	post2 := &model.Post{ChannelId: channel2.Id, Message: "sgtitlereview\n with return"}
@@ -631,6 +834,8 @@ func TestSearchPostsInChannel(t *testing.T) {
 
 func TestSearchPostsFromUser(t *testing.T) {
 	th := Setup().InitBasic()
+	defer th.TearDown()
+
 	Client := th.BasicClient
 	channel1 := th.BasicChannel
 	team := th.BasicTeam
@@ -640,7 +845,7 @@ func TestSearchPostsFromUser(t *testing.T) {
 	Client.Must(Client.AddChannelMember(channel1.Id, th.BasicUser2.Id))
 	Client.Must(Client.AddChannelMember(channel2.Id, th.BasicUser2.Id))
 	user3 := th.CreateUser(Client)
-	LinkUserToTeam(user3, team)
+	th.LinkUserToTeam(user3, team)
 	Client.Must(Client.AddChannelMember(channel1.Id, user3.Id))
 	Client.Must(Client.AddChannelMember(channel2.Id, user3.Id))
 
@@ -698,19 +903,21 @@ func TestSearchPostsFromUser(t *testing.T) {
 
 func TestGetPostsCache(t *testing.T) {
 	th := Setup().InitBasic()
+	defer th.TearDown()
+
 	Client := th.BasicClient
 	channel1 := th.BasicChannel
 
 	time.Sleep(10 * time.Millisecond)
-	post1 := &model.Post{ChannelId: channel1.Id, Message: "a" + model.NewId() + "a"}
+	post1 := &model.Post{ChannelId: channel1.Id, Message: "zz" + model.NewId() + "a"}
 	post1 = Client.Must(Client.CreatePost(post1)).Data.(*model.Post)
 
 	time.Sleep(10 * time.Millisecond)
-	post2 := &model.Post{ChannelId: channel1.Id, Message: "a" + model.NewId() + "a"}
+	post2 := &model.Post{ChannelId: channel1.Id, Message: "zz" + model.NewId() + "a"}
 	post2 = Client.Must(Client.CreatePost(post2)).Data.(*model.Post)
 
 	time.Sleep(10 * time.Millisecond)
-	post3 := &model.Post{ChannelId: channel1.Id, Message: "a" + model.NewId() + "a"}
+	post3 := &model.Post{ChannelId: channel1.Id, Message: "zz" + model.NewId() + "a"}
 	post3 = Client.Must(Client.CreatePost(post3)).Data.(*model.Post)
 
 	etag := Client.Must(Client.GetPosts(channel1.Id, 0, 2, "")).Etag
@@ -736,33 +943,35 @@ func TestGetPostsCache(t *testing.T) {
 }
 
 func TestDeletePosts(t *testing.T) {
-	th := Setup().InitBasic()
+	th := Setup().InitBasic().InitSystemAdmin()
+	defer th.TearDown()
+
 	Client := th.BasicClient
 	channel1 := th.BasicChannel
-	UpdateUserToTeamAdmin(th.BasicUser2, th.BasicTeam)
+	team1 := th.BasicTeam
 
 	time.Sleep(10 * time.Millisecond)
-	post1 := &model.Post{ChannelId: channel1.Id, Message: "a" + model.NewId() + "a"}
+	post1 := &model.Post{ChannelId: channel1.Id, Message: "zz" + model.NewId() + "a"}
 	post1 = Client.Must(Client.CreatePost(post1)).Data.(*model.Post)
 
 	time.Sleep(10 * time.Millisecond)
-	post1a1 := &model.Post{ChannelId: channel1.Id, Message: "a" + model.NewId() + "a", RootId: post1.Id}
+	post1a1 := &model.Post{ChannelId: channel1.Id, Message: "zz" + model.NewId() + "a", RootId: post1.Id}
 	post1a1 = Client.Must(Client.CreatePost(post1a1)).Data.(*model.Post)
 
 	time.Sleep(10 * time.Millisecond)
-	post1a2 := &model.Post{ChannelId: channel1.Id, Message: "a" + model.NewId() + "a", RootId: post1.Id, ParentId: post1a1.Id}
+	post1a2 := &model.Post{ChannelId: channel1.Id, Message: "zz" + model.NewId() + "a", RootId: post1.Id, ParentId: post1a1.Id}
 	post1a2 = Client.Must(Client.CreatePost(post1a2)).Data.(*model.Post)
 
 	time.Sleep(10 * time.Millisecond)
-	post2 := &model.Post{ChannelId: channel1.Id, Message: "a" + model.NewId() + "a"}
+	post2 := &model.Post{ChannelId: channel1.Id, Message: "zz" + model.NewId() + "a"}
 	post2 = Client.Must(Client.CreatePost(post2)).Data.(*model.Post)
 
 	time.Sleep(10 * time.Millisecond)
-	post3 := &model.Post{ChannelId: channel1.Id, Message: "a" + model.NewId() + "a"}
+	post3 := &model.Post{ChannelId: channel1.Id, Message: "zz" + model.NewId() + "a"}
 	post3 = Client.Must(Client.CreatePost(post3)).Data.(*model.Post)
 
 	time.Sleep(10 * time.Millisecond)
-	post3a1 := &model.Post{ChannelId: channel1.Id, Message: "a" + model.NewId() + "a", RootId: post3.Id}
+	post3a1 := &model.Post{ChannelId: channel1.Id, Message: "zz" + model.NewId() + "a", RootId: post3.Id}
 	post3a1 = Client.Must(Client.CreatePost(post3a1)).Data.(*model.Post)
 
 	time.Sleep(10 * time.Millisecond)
@@ -770,40 +979,153 @@ func TestDeletePosts(t *testing.T) {
 
 	r2 := Client.Must(Client.GetPosts(channel1.Id, 0, 10, "")).Data.(*model.PostList)
 
-	if len(r2.Posts) != 5 {
-		t.Fatal("should have returned 4 items")
+	if post := r2.Posts[post3.Id]; post != nil {
+		t.Fatal("should have not returned deleted post")
 	}
 
 	time.Sleep(10 * time.Millisecond)
-	post4 := &model.Post{ChannelId: channel1.Id, Message: "a" + model.NewId() + "a"}
-	post4 = Client.Must(Client.CreatePost(post4)).Data.(*model.Post)
+	post4a := &model.Post{ChannelId: channel1.Id, Message: "zz" + model.NewId() + "a"}
+	post4a = Client.Must(Client.CreatePost(post4a)).Data.(*model.Post)
+
+	time.Sleep(10 * time.Millisecond)
+	post4b := &model.Post{ChannelId: channel1.Id, Message: "zz" + model.NewId() + "a"}
+	post4b = Client.Must(Client.CreatePost(post4b)).Data.(*model.Post)
+
+	SystemAdminClient := th.SystemAdminClient
+	th.LinkUserToTeam(th.SystemAdminUser, th.BasicTeam)
+	SystemAdminClient.Must(SystemAdminClient.JoinChannel(channel1.Id))
+
+	th.LoginBasic2()
+	Client.Must(Client.JoinChannel(channel1.Id))
+
+	if _, err := Client.DeletePost(channel1.Id, post4a.Id); err == nil {
+		t.Fatal(err)
+	}
+
+	// Check the appropriate permissions are enforced.
+	defaultRolePermissions := th.SaveDefaultRolePermissions()
+	defer func() {
+		th.RestoreDefaultRolePermissions(defaultRolePermissions)
+	}()
+
+	th.UpdateUserToTeamAdmin(th.BasicUser2, th.BasicTeam)
+
+	Client.Logout()
+	th.LoginBasic2()
+	Client.SetTeamId(team1.Id)
+
+	Client.Must(Client.DeletePost(channel1.Id, post4a.Id))
+
+	SystemAdminClient.Must(SystemAdminClient.DeletePost(channel1.Id, post4b.Id))
+
+	th.RemovePermissionFromRole(model.PERMISSION_DELETE_POST.Id, model.CHANNEL_USER_ROLE_ID)
+	th.AddPermissionToRole(model.PERMISSION_DELETE_POST.Id, model.TEAM_ADMIN_ROLE_ID)
+
+	th.LoginBasic()
+
+	time.Sleep(10 * time.Millisecond)
+	post5a := &model.Post{ChannelId: channel1.Id, Message: "zz" + model.NewId() + "a"}
+	post5a = Client.Must(Client.CreatePost(post5a)).Data.(*model.Post)
+
+	time.Sleep(10 * time.Millisecond)
+	post5b := &model.Post{ChannelId: channel1.Id, Message: "zz" + model.NewId() + "a"}
+	post5b = Client.Must(Client.CreatePost(post5b)).Data.(*model.Post)
+
+	if _, err := Client.DeletePost(channel1.Id, post5a.Id); err == nil {
+		t.Fatal(err)
+	}
 
 	th.LoginBasic2()
 
-	Client.Must(Client.DeletePost(channel1.Id, post4.Id))
+	Client.Must(Client.DeletePost(channel1.Id, post5a.Id))
+
+	SystemAdminClient.Must(SystemAdminClient.DeletePost(channel1.Id, post5b.Id))
 }
 
 func TestEmailMention(t *testing.T) {
 	th := Setup().InitBasic()
+	defer th.TearDown()
+
 	Client := th.BasicClient
 	channel1 := th.BasicChannel
+	Client.Must(Client.AddChannelMember(channel1.Id, th.BasicUser2.Id))
 
-	post1 := &model.Post{ChannelId: channel1.Id, Message: th.BasicUser.Username}
+	th.LoginBasic2()
+	//Set the notification properties
+	data := make(map[string]string)
+	data["user_id"] = th.BasicUser2.Id
+	data["email"] = "true"
+	data["desktop"] = "all"
+	data["desktop_sound"] = "false"
+	data["comments"] = "any"
+	Client.Must(Client.UpdateUserNotify(data))
+
+	store.Must(th.App.Srv.Store.Preference().Save(&model.Preferences{{
+		UserId:   th.BasicUser2.Id,
+		Category: model.PREFERENCE_CATEGORY_NOTIFICATIONS,
+		Name:     model.PREFERENCE_NAME_EMAIL_INTERVAL,
+		Value:    "0",
+	}}))
+
+	//Delete all the messages before create a mention post
+	utils.DeleteMailBox(th.BasicUser2.Email)
+
+	//Send a mention message from user1 to user2
+	th.LoginBasic()
+	time.Sleep(10 * time.Millisecond)
+	post1 := &model.Post{ChannelId: channel1.Id, Message: "@" + th.BasicUser2.Username + " this is a test"}
 	post1 = Client.Must(Client.CreatePost(post1)).Data.(*model.Post)
 
-	// No easy way to verify the email was sent, but this will at least cause the server to throw errors if the code is broken
-
+	var resultsMailbox utils.JSONMessageHeaderInbucket
+	err := utils.RetryInbucket(5, func() error {
+		var err error
+		resultsMailbox, err = utils.GetMailBox(th.BasicUser2.Email)
+		return err
+	})
+	if err != nil {
+		t.Log(err)
+		t.Log("No email was received, maybe due load on the server. Disabling this verification")
+	}
+	if err == nil && len(resultsMailbox) > 0 {
+		if !strings.ContainsAny(resultsMailbox[len(resultsMailbox)-1].To[0], th.BasicUser2.Email) {
+			t.Fatal("Wrong To recipient")
+		} else {
+			for i := 0; i < 30; i++ {
+				for j := len(resultsMailbox) - 1; j >= 0; j-- {
+					isUser := false
+					for _, to := range resultsMailbox[j].To {
+						if to == "<"+th.BasicUser2.Email+">" {
+							isUser = true
+						}
+					}
+					if !isUser {
+						continue
+					}
+					if resultsEmail, err := utils.GetMessageFromMailbox(th.BasicUser2.Email, resultsMailbox[j].ID); err == nil {
+						if strings.Contains(resultsEmail.Body.Text, post1.Message) {
+							return
+						} else if i == 4 {
+							t.Log(resultsEmail.Body.Text)
+							t.Fatal("Received wrong Message")
+						}
+					}
+				}
+				time.Sleep(100 * time.Millisecond)
+			}
+			t.Fatal("Didn't receive message")
+		}
+	}
 }
 
 func TestFuzzyPosts(t *testing.T) {
 	th := Setup().InitBasic()
+	defer th.TearDown()
+
 	Client := th.BasicClient
 	channel1 := th.BasicChannel
 
-	filenames := []string{"junk"}
-
 	for i := 0; i < len(utils.FUZZY_STRINGS_POSTS); i++ {
-		post := &model.Post{ChannelId: channel1.Id, Message: utils.FUZZY_STRINGS_POSTS[i], Filenames: filenames}
+		post := &model.Post{ChannelId: channel1.Id, Message: utils.FUZZY_STRINGS_POSTS[i]}
 
 		_, err := Client.CreatePost(post)
 		if err != nil {
@@ -812,115 +1134,377 @@ func TestFuzzyPosts(t *testing.T) {
 	}
 }
 
-func TestMakeDirectChannelVisible(t *testing.T) {
+func TestGetFlaggedPosts(t *testing.T) {
 	th := Setup().InitBasic()
-	Client := th.BasicClient
-	team := th.BasicTeam
-	user1 := th.BasicUser
-	user2 := th.BasicUser2
+	defer th.TearDown()
 
-	th.LoginBasic2()
+	Client := th.BasicClient
+	user1 := th.BasicUser
+	post1 := th.BasicPost
 
 	preferences := &model.Preferences{
 		{
-			UserId:   user2.Id,
-			Category: model.PREFERENCE_CATEGORY_DIRECT_CHANNEL_SHOW,
-			Name:     user1.Id,
-			Value:    "false",
+			UserId:   user1.Id,
+			Category: model.PREFERENCE_CATEGORY_FLAGGED_POST,
+			Name:     post1.Id,
+			Value:    "true",
 		},
 	}
 	Client.Must(Client.SetPreferences(preferences))
 
-	Client.Must(Client.Logout())
-	th.LoginBasic()
-	th.BasicClient.SetTeamId(team.Id)
+	r1 := Client.Must(Client.GetFlaggedPosts(0, 2)).Data.(*model.PostList)
 
-	channel := Client.Must(Client.CreateDirectChannel(user2.Id)).Data.(*model.Channel)
+	if len(r1.Order) == 0 {
+		t.Fatal("should have gotten a flagged post")
+	}
 
-	makeDirectChannelVisible(team.Id, channel.Id)
+	if _, ok := r1.Posts[post1.Id]; !ok {
+		t.Fatal("missing flagged post")
+	}
 
-	if result, err := Client.GetPreference(model.PREFERENCE_CATEGORY_DIRECT_CHANNEL_SHOW, user2.Id); err != nil {
-		t.Fatal("Errored trying to set direct channel to be visible for user1")
-	} else if pref := result.Data.(*model.Preference); pref.Value != "true" {
-		t.Fatal("Failed to set direct channel to be visible for user1")
+	Client.DeletePreferences(preferences)
+
+	r2 := Client.Must(Client.GetFlaggedPosts(0, 2)).Data.(*model.PostList)
+
+	if len(r2.Order) != 0 {
+		t.Fatal("should not have gotten a flagged post")
+	}
+
+	Client.SetTeamId(model.NewId())
+	if _, err := Client.GetFlaggedPosts(0, 2); err == nil {
+		t.Fatal("should have failed - bad team id")
 	}
 }
 
-func TestGetOutOfChannelMentions(t *testing.T) {
+func TestGetMessageForNotification(t *testing.T) {
 	th := Setup().InitBasic()
+	defer th.TearDown()
+
+	testPng := store.Must(th.App.Srv.Store.FileInfo().Save(&model.FileInfo{
+		CreatorId: model.NewId(),
+		Path:      "test1.png",
+		Name:      "test1.png",
+		MimeType:  "image/png",
+	})).(*model.FileInfo)
+
+	testJpg1 := store.Must(th.App.Srv.Store.FileInfo().Save(&model.FileInfo{
+		CreatorId: model.NewId(),
+		Path:      "test2.jpg",
+		Name:      "test2.jpg",
+		MimeType:  "image/jpeg",
+	})).(*model.FileInfo)
+
+	testFile := store.Must(th.App.Srv.Store.FileInfo().Save(&model.FileInfo{
+		CreatorId: model.NewId(),
+		Path:      "test1.go",
+		Name:      "test1.go",
+		MimeType:  "text/plain",
+	})).(*model.FileInfo)
+
+	testJpg2 := store.Must(th.App.Srv.Store.FileInfo().Save(&model.FileInfo{
+		CreatorId: model.NewId(),
+		Path:      "test3.jpg",
+		Name:      "test3.jpg",
+		MimeType:  "image/jpeg",
+	})).(*model.FileInfo)
+
+	translateFunc := utils.GetUserTranslations("en")
+
+	post := &model.Post{
+		Id:      model.NewId(),
+		Message: "test",
+	}
+
+	if th.App.GetMessageForNotification(post, translateFunc) != "test" {
+		t.Fatal("should've returned message text")
+	}
+
+	post.FileIds = model.StringArray{testPng.Id}
+	store.Must(th.App.Srv.Store.FileInfo().AttachToPost(testPng.Id, post.Id))
+	if th.App.GetMessageForNotification(post, translateFunc) != "test" {
+		t.Fatal("should've returned message text, even with attachments")
+	}
+
+	post.Message = ""
+	if message := th.App.GetMessageForNotification(post, translateFunc); message != "1 image sent: test1.png" {
+		t.Fatal("should've returned number of images:", message)
+	}
+
+	post.FileIds = model.StringArray{testPng.Id, testJpg1.Id}
+	store.Must(th.App.Srv.Store.FileInfo().AttachToPost(testJpg1.Id, post.Id))
+	th.App.Srv.Store.FileInfo().InvalidateFileInfosForPostCache(post.Id)
+	if message := th.App.GetMessageForNotification(post, translateFunc); message != "2 images sent: test1.png, test2.jpg" && message != "2 images sent: test2.jpg, test1.png" {
+		t.Fatal("should've returned number of images:", message)
+	}
+
+	post.Id = model.NewId()
+	post.FileIds = model.StringArray{testFile.Id}
+	store.Must(th.App.Srv.Store.FileInfo().AttachToPost(testFile.Id, post.Id))
+	if message := th.App.GetMessageForNotification(post, translateFunc); message != "1 file sent: test1.go" {
+		t.Fatal("should've returned number of files:", message)
+	}
+
+	store.Must(th.App.Srv.Store.FileInfo().AttachToPost(testJpg2.Id, post.Id))
+	th.App.Srv.Store.FileInfo().InvalidateFileInfosForPostCache(post.Id)
+	post.FileIds = model.StringArray{testFile.Id, testJpg2.Id}
+	if message := th.App.GetMessageForNotification(post, translateFunc); message != "2 files sent: test1.go, test3.jpg" && message != "2 files sent: test3.jpg, test1.go" {
+		t.Fatal("should've returned number of mixed files:", message)
+	}
+}
+
+func TestGetFileInfosForPost(t *testing.T) {
+	th := Setup().InitBasic()
+	defer th.TearDown()
+
 	Client := th.BasicClient
 	channel1 := th.BasicChannel
-	team1 := th.BasicTeam
-	user1 := th.BasicUser
-	user2 := th.BasicUser2
-	user3 := th.CreateUser(Client)
-	LinkUserToTeam(user3, team1)
 
-	var allProfiles map[string]*model.User
-	if result := <-Srv.Store.User().GetProfiles(team1.Id); result.Err != nil {
-		t.Fatal(result.Err)
+	fileIds := make([]string, 3)
+	if data, err := readTestFile("test.png"); err != nil {
+		t.Fatal(err)
 	} else {
-		allProfiles = result.Data.(map[string]*model.User)
+		for i := 0; i < 3; i++ {
+			fileIds[i] = Client.MustGeneric(Client.UploadPostAttachment(data, channel1.Id, "test.png")).(*model.FileUploadResponse).FileInfos[0].Id
+		}
 	}
 
-	var members []model.ChannelMember
-	if result := <-Srv.Store.Channel().GetMembers(channel1.Id); result.Err != nil {
-		t.Fatal(result.Err)
+	post1 := Client.Must(Client.CreatePost(&model.Post{
+		ChannelId: channel1.Id,
+		Message:   "test",
+		FileIds:   fileIds,
+	})).Data.(*model.Post)
+
+	var etag string
+	if infos, err := Client.GetFileInfosForPost(channel1.Id, post1.Id, ""); err != nil {
+		t.Fatal(err)
+	} else if len(infos) != 3 {
+		t.Fatal("should've received 3 files")
+	} else if Client.Etag == "" {
+		t.Fatal("should've received etag")
 	} else {
-		members = result.Data.([]model.ChannelMember)
+		etag = Client.Etag
 	}
 
-	// test a post that doesn't @mention anybody
-	post1 := &model.Post{ChannelId: channel1.Id, Message: fmt.Sprintf("%v %v %v", user1.Username, user2.Username, user3.Username)}
-	if mentioned := getOutOfChannelMentions(post1, allProfiles, members); len(mentioned) != 0 {
-		t.Fatalf("getOutOfChannelMentions returned %v when no users were mentioned", mentioned)
+	if infos, err := Client.GetFileInfosForPost(channel1.Id, post1.Id, etag); err != nil {
+		t.Fatal(err)
+	} else if len(infos) != 0 {
+		t.Fatal("should've returned nothing because of etag")
+	}
+}
+
+func TestGetPostById(t *testing.T) {
+	th := Setup().InitBasic()
+	defer th.TearDown()
+
+	Client := th.BasicClient
+	channel1 := th.BasicChannel
+
+	time.Sleep(10 * time.Millisecond)
+	post1 := &model.Post{ChannelId: channel1.Id, Message: "yommamma" + model.NewId() + "a"}
+	post1 = Client.Must(Client.CreatePost(post1)).Data.(*model.Post)
+
+	if post, respMetadata := Client.GetPostById(post1.Id, ""); respMetadata.Error != nil {
+		t.Fatal(respMetadata.Error)
+	} else {
+		if len(post.Order) != 1 {
+			t.Fatal("should be just one post")
+		}
+
+		if post.Order[0] != post1.Id {
+			t.Fatal("wrong order")
+		}
+
+		if post.Posts[post.Order[0]].Message != post1.Message {
+			t.Fatal("wrong message from post")
+		}
 	}
 
-	// test a post that @mentions someone in the channel
-	post2 := &model.Post{ChannelId: channel1.Id, Message: fmt.Sprintf("@%v is %v", user1.Username, user1.Username)}
-	if mentioned := getOutOfChannelMentions(post2, allProfiles, members); len(mentioned) != 0 {
-		t.Fatalf("getOutOfChannelMentions returned %v when only users in the channel were mentioned", mentioned)
+	if _, respMetadata := Client.GetPostById("45345435345345", ""); respMetadata.Error == nil {
+		t.Fatal(respMetadata.Error)
+	}
+}
+
+func TestGetPermalinkTmp(t *testing.T) {
+	th := Setup().InitBasic().InitSystemAdmin()
+	defer th.TearDown()
+
+	Client := th.BasicClient
+	channel1 := th.BasicChannel
+	team := th.BasicTeam
+
+	th.LoginBasic()
+
+	time.Sleep(10 * time.Millisecond)
+	post1 := &model.Post{ChannelId: channel1.Id, Message: "zz" + model.NewId() + "a"}
+	post1 = Client.Must(Client.CreatePost(post1)).Data.(*model.Post)
+
+	time.Sleep(10 * time.Millisecond)
+	post2 := &model.Post{ChannelId: channel1.Id, Message: "zz" + model.NewId() + "a"}
+	post2 = Client.Must(Client.CreatePost(post2)).Data.(*model.Post)
+
+	etag := Client.Must(Client.GetPost(channel1.Id, post1.Id, "")).Etag
+
+	// test etag caching
+	if cache_result, respMetadata := Client.GetPermalink(channel1.Id, post1.Id, etag); respMetadata.Error != nil {
+		t.Fatal(respMetadata.Error)
+	} else if cache_result != nil {
+		t.Log(cache_result)
+		t.Fatal("cache should be empty")
 	}
 
-	// test a post that @mentions someone not in the channel
-	post3 := &model.Post{ChannelId: channel1.Id, Message: fmt.Sprintf("@%v and @%v aren't in the channel", user2.Username, user3.Username)}
-	if mentioned := getOutOfChannelMentions(post3, allProfiles, members); len(mentioned) != 2 || (mentioned[0].Id != user2.Id && mentioned[0].Id != user3.Id) || (mentioned[1].Id != user2.Id && mentioned[1].Id != user3.Id) {
-		t.Fatalf("getOutOfChannelMentions returned %v when two users outside the channel were mentioned", mentioned)
+	if results, respMetadata := Client.GetPermalink(channel1.Id, post1.Id, ""); respMetadata.Error != nil {
+		t.Fatal(respMetadata.Error)
+	} else if results == nil {
+		t.Fatal("should not be empty")
 	}
 
-	// test a post that @mentions someone not in the channel as well as someone in the channel
-	post4 := &model.Post{ChannelId: channel1.Id, Message: fmt.Sprintf("@%v and @%v might be in the channel", user2.Username, user1.Username)}
-	if mentioned := getOutOfChannelMentions(post4, allProfiles, members); len(mentioned) != 1 || mentioned[0].Id != user2.Id {
-		t.Fatalf("getOutOfChannelMentions returned %v when someone in the channel and someone  outside the channel were mentioned", mentioned)
-	}
-
-	Client.Must(Client.Logout())
-
-	team2 := th.CreateTeam(Client)
-	user4 := th.CreateUser(Client)
-	LinkUserToTeam(user4, team2)
-
-	Client.Must(Client.Login(user4.Email, user4.Password))
-	Client.SetTeamId(team2.Id)
-
-	channel2 := &model.Channel{DisplayName: "Test API Name", Name: "a" + model.NewId() + "a", Type: model.CHANNEL_OPEN, TeamId: team2.Id}
+	// Test permalink to private channels.
+	channel2 := &model.Channel{DisplayName: "TestGetPermalinkPriv", Name: "zz" + model.NewId() + "a", Type: model.CHANNEL_PRIVATE, TeamId: team.Id}
 	channel2 = Client.Must(Client.CreateChannel(channel2)).Data.(*model.Channel)
+	time.Sleep(10 * time.Millisecond)
+	post3 := &model.Post{ChannelId: channel2.Id, Message: "zz" + model.NewId() + "a"}
+	post3 = Client.Must(Client.CreatePost(post3)).Data.(*model.Post)
 
-	if result := <-Srv.Store.User().GetProfiles(team2.Id); result.Err != nil {
-		t.Fatal(result.Err)
-	} else {
-		allProfiles = result.Data.(map[string]*model.User)
+	if _, md := Client.GetPermalink(channel2.Id, post3.Id, ""); md.Error != nil {
+		t.Fatal(md.Error)
 	}
 
-	if result := <-Srv.Store.Channel().GetMembers(channel2.Id); result.Err != nil {
-		t.Fatal(result.Err)
-	} else {
-		members = result.Data.([]model.ChannelMember)
+	th.LoginBasic2()
+
+	if _, md := Client.GetPermalink(channel2.Id, post3.Id, ""); md.Error == nil {
+		t.Fatal("Expected 403 error")
 	}
 
-	// test a post that @mentions someone on a different team
-	post5 := &model.Post{ChannelId: channel2.Id, Message: fmt.Sprintf("@%v and @%v might be in the channel", user2.Username, user3.Username)}
-	if mentioned := getOutOfChannelMentions(post5, allProfiles, members); len(mentioned) != 0 {
-		t.Fatalf("getOutOfChannelMentions returned %v when two users on a different team were mentioned", mentioned)
+	// Test direct channels.
+	th.LoginBasic()
+	channel3 := Client.Must(Client.CreateDirectChannel(th.SystemAdminUser.Id)).Data.(*model.Channel)
+	time.Sleep(10 * time.Millisecond)
+	post4 := &model.Post{ChannelId: channel3.Id, Message: "zz" + model.NewId() + "a"}
+	post4 = Client.Must(Client.CreatePost(post4)).Data.(*model.Post)
+
+	if _, md := Client.GetPermalink(channel3.Id, post4.Id, ""); md.Error != nil {
+		t.Fatal(md.Error)
+	}
+
+	th.LoginBasic2()
+
+	if _, md := Client.GetPermalink(channel3.Id, post4.Id, ""); md.Error == nil {
+		t.Fatal("Expected 403 error")
+	}
+}
+
+func TestGetOpenGraphMetadata(t *testing.T) {
+	th := Setup().InitBasic()
+	defer th.TearDown()
+
+	Client := th.BasicClient
+
+	th.App.UpdateConfig(func(cfg *model.Config) {
+		*cfg.ServiceSettings.EnableLinkPreviews = true
+		*cfg.ServiceSettings.AllowedUntrustedInternalConnections = "localhost 127.0.0.1"
+	})
+
+	ogDataCacheMissCount := 0
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ogDataCacheMissCount++
+
+		if r.URL.Path == "/og-data/" {
+			fmt.Fprintln(w, `
+				<html><head><meta property="og:type" content="article" />
+		  		<meta property="og:title" content="Test Title" />
+		  		<meta property="og:url" content="http://example.com/" />
+				</head><body></body></html>
+			`)
+		} else if r.URL.Path == "/no-og-data/" {
+			fmt.Fprintln(w, `<html><head></head><body></body></html>`)
+		}
+	}))
+
+	for _, data := range [](map[string]interface{}){
+		{"path": "/og-data/", "title": "Test Title", "cacheMissCount": 1},
+		{"path": "/no-og-data/", "title": "", "cacheMissCount": 2},
+
+		// Data should be cached for following
+		{"path": "/og-data/", "title": "Test Title", "cacheMissCount": 2},
+		{"path": "/no-og-data/", "title": "", "cacheMissCount": 2},
+	} {
+		res, err := Client.DoApiPost(
+			"/get_opengraph_metadata",
+			fmt.Sprintf("{\"url\":\"%s\"}", ts.URL+data["path"].(string)),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		ogData := model.StringInterfaceFromJson(res.Body)
+		if strings.Compare(ogData["title"].(string), data["title"].(string)) != 0 {
+			t.Fatal(fmt.Sprintf(
+				"OG data title mismatch for path \"%s\". Expected title: \"%s\". Actual title: \"%s\"",
+				data["path"].(string), data["title"].(string), ogData["title"].(string),
+			))
+		}
+
+		if ogDataCacheMissCount != data["cacheMissCount"].(int) {
+			t.Fatal(fmt.Sprintf(
+				"Cache miss count didn't match. Expected value %d. Actual value %d.",
+				data["cacheMissCount"].(int), ogDataCacheMissCount,
+			))
+		}
+	}
+
+	th.App.UpdateConfig(func(cfg *model.Config) { *cfg.ServiceSettings.EnableLinkPreviews = false })
+	if _, err := Client.DoApiPost("/get_opengraph_metadata", "{\"url\":\"/og-data/\"}"); err == nil || err.StatusCode != http.StatusNotImplemented {
+		t.Fatal("should have failed with 501 - disabled link previews")
+	}
+}
+
+func TestPinPost(t *testing.T) {
+	th := Setup().InitBasic()
+	defer th.TearDown()
+
+	Client := th.BasicClient
+
+	post := th.BasicPost
+	if rupost1, err := Client.PinPost(post.ChannelId, post.Id); err != nil {
+		t.Fatal(err)
+	} else {
+		if !rupost1.Data.(*model.Post).IsPinned {
+			t.Fatal("failed to pin post")
+		}
+	}
+
+	pinnedPost := th.PinnedPost
+	if rupost2, err := Client.PinPost(pinnedPost.ChannelId, pinnedPost.Id); err != nil {
+		t.Fatal(err)
+	} else {
+		if !rupost2.Data.(*model.Post).IsPinned {
+			t.Fatal("pinning a post should be idempotent")
+		}
+	}
+}
+
+func TestUnpinPost(t *testing.T) {
+	th := Setup().InitBasic()
+	defer th.TearDown()
+
+	Client := th.BasicClient
+
+	pinnedPost := th.PinnedPost
+	if rupost1, err := Client.UnpinPost(pinnedPost.ChannelId, pinnedPost.Id); err != nil {
+		t.Fatal(err)
+	} else {
+		if rupost1.Data.(*model.Post).IsPinned {
+			t.Fatal("failed to unpin post")
+		}
+	}
+
+	post := th.BasicPost
+	if rupost2, err := Client.UnpinPost(post.ChannelId, post.Id); err != nil {
+		t.Fatal(err)
+	} else {
+		if rupost2.Data.(*model.Post).IsPinned {
+			t.Fatal("unpinning a post should be idempotent")
+		}
 	}
 }

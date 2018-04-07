@@ -1,4 +1,4 @@
-// Copyright (c) 2015 Mattermost, Inc. All Rights Reserved.
+// Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See License.txt for license information.
 
 package model
@@ -21,16 +21,6 @@ type SearchParams struct {
 
 var searchFlags = [...]string{"from", "channel", "in"}
 
-func splitWordsNoQuotes(text string) []string {
-	words := []string{}
-
-	for _, word := range strings.Fields(text) {
-		words = append(words, word)
-	}
-
-	return words
-}
-
 func splitWords(text string) []string {
 	words := []string{}
 
@@ -45,14 +35,14 @@ func splitWords(text string) []string {
 				foundQuote = false
 				location = i + 1
 			} else {
-				words = append(words, splitWordsNoQuotes(text[location:i])...)
+				words = append(words, strings.Fields(text[location:i])...)
 				foundQuote = true
 				location = i
 			}
 		}
 	}
 
-	words = append(words, splitWordsNoQuotes(text[location:])...)
+	words = append(words, strings.Fields(text[location:])...)
 
 	return words
 }
@@ -165,7 +155,7 @@ func ParseSearchParams(text string) []*SearchParams {
 	if len(plainTerms) == 0 && len(hashtagTerms) == 0 && (len(inChannels) != 0 || len(fromUsers) != 0) {
 		paramsList = append(paramsList, &SearchParams{
 			Terms:      "",
-			IsHashtag:  true,
+			IsHashtag:  false,
 			InChannels: inChannels,
 			FromUsers:  fromUsers,
 		})

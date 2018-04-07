@@ -1,97 +1,74 @@
-// Copyright (c) 2016 Mattermost, Inc. All Rights Reserved.
+// Copyright (c) 2016-present Mattermost, Inc. All Rights Reserved.
 // See License.txt for license information.
 
 package api
 
 import (
-	"bufio"
-	"io"
-	"io/ioutil"
 	"net/http"
-	"os"
 	"strconv"
-	"strings"
-	"time"
 
-	l4g "github.com/alecthomas/log4go"
+	"github.com/avct/uasurfer"
 	"github.com/gorilla/mux"
-	"github.com/mattermost/platform/einterfaces"
-	"github.com/mattermost/platform/model"
-	"github.com/mattermost/platform/store"
-	"github.com/mattermost/platform/utils"
-	"github.com/mssola/user_agent"
+	"github.com/mattermost/mattermost-server/app"
+	"github.com/mattermost/mattermost-server/model"
 )
 
-func InitAdmin() {
-	l4g.Debug(utils.T("api.admin.init.debug"))
-
-	BaseRoutes.Admin.Handle("/logs", ApiUserRequired(getLogs)).Methods("GET")
-	BaseRoutes.Admin.Handle("/audits", ApiUserRequired(getAllAudits)).Methods("GET")
-	BaseRoutes.Admin.Handle("/config", ApiUserRequired(getConfig)).Methods("GET")
-	BaseRoutes.Admin.Handle("/save_config", ApiUserRequired(saveConfig)).Methods("POST")
-	BaseRoutes.Admin.Handle("/reload_config", ApiUserRequired(reloadConfig)).Methods("GET")
-	BaseRoutes.Admin.Handle("/test_email", ApiUserRequired(testEmail)).Methods("POST")
-	BaseRoutes.Admin.Handle("/recycle_db_conn", ApiUserRequired(recycleDatabaseConnection)).Methods("GET")
-	BaseRoutes.Admin.Handle("/analytics/{id:[A-Za-z0-9]+}/{name:[A-Za-z0-9_]+}", ApiUserRequired(getAnalytics)).Methods("GET")
-	BaseRoutes.Admin.Handle("/analytics/{name:[A-Za-z0-9_]+}", ApiUserRequired(getAnalytics)).Methods("GET")
-	BaseRoutes.Admin.Handle("/save_compliance_report", ApiUserRequired(saveComplianceReport)).Methods("POST")
-	BaseRoutes.Admin.Handle("/compliance_reports", ApiUserRequired(getComplianceReports)).Methods("GET")
-	BaseRoutes.Admin.Handle("/download_compliance_report/{id:[A-Za-z0-9]+}", ApiUserRequiredTrustRequester(downloadComplianceReport)).Methods("GET")
-	BaseRoutes.Admin.Handle("/upload_brand_image", ApiAdminSystemRequired(uploadBrandImage)).Methods("POST")
-	BaseRoutes.Admin.Handle("/get_brand_image", ApiAppHandlerTrustRequester(getBrandImage)).Methods("GET")
-	BaseRoutes.Admin.Handle("/reset_mfa", ApiAdminSystemRequired(adminResetMfa)).Methods("POST")
-	BaseRoutes.Admin.Handle("/reset_password", ApiAdminSystemRequired(adminResetPassword)).Methods("POST")
-	BaseRoutes.Admin.Handle("/ldap_sync_now", ApiAdminSystemRequired(ldapSyncNow)).Methods("POST")
-	BaseRoutes.Admin.Handle("/saml_metadata", ApiAppHandler(samlMetadata)).Methods("GET")
-	BaseRoutes.Admin.Handle("/add_certificate", ApiAdminSystemRequired(addCertificate)).Methods("POST")
-	BaseRoutes.Admin.Handle("/remove_certificate", ApiAdminSystemRequired(removeCertificate)).Methods("POST")
+func (api *API) InitAdmin() {
+	api.BaseRoutes.Admin.Handle("/logs", api.ApiAdminSystemRequired(getLogs)).Methods("GET")
+	api.BaseRoutes.Admin.Handle("/audits", api.ApiAdminSystemRequired(getAllAudits)).Methods("GET")
+	api.BaseRoutes.Admin.Handle("/config", api.ApiAdminSystemRequired(getConfig)).Methods("GET")
+	api.BaseRoutes.Admin.Handle("/save_config", api.ApiAdminSystemRequired(saveConfig)).Methods("POST")
+	api.BaseRoutes.Admin.Handle("/reload_config", api.ApiAdminSystemRequired(reloadConfig)).Methods("GET")
+	api.BaseRoutes.Admin.Handle("/invalidate_all_caches", api.ApiAdminSystemRequired(invalidateAllCaches)).Methods("GET")
+	api.BaseRoutes.Admin.Handle("/test_email", api.ApiAdminSystemRequired(testEmail)).Methods("POST")
+	api.BaseRoutes.Admin.Handle("/recycle_db_conn", api.ApiAdminSystemRequired(recycleDatabaseConnection)).Methods("GET")
+	api.BaseRoutes.Admin.Handle("/analytics/{id:[A-Za-z0-9]+}/{name:[A-Za-z0-9_]+}", api.ApiAdminSystemRequired(getAnalytics)).Methods("GET")
+	api.BaseRoutes.Admin.Handle("/analytics/{name:[A-Za-z0-9_]+}", api.ApiAdminSystemRequired(getAnalytics)).Methods("GET")
+	api.BaseRoutes.Admin.Handle("/save_compliance_report", api.ApiAdminSystemRequired(saveComplianceReport)).Methods("POST")
+	api.BaseRoutes.Admin.Handle("/compliance_reports", api.ApiAdminSystemRequired(getComplianceReports)).Methods("GET")
+	api.BaseRoutes.Admin.Handle("/download_compliance_report/{id:[A-Za-z0-9]+}", api.ApiAdminSystemRequiredTrustRequester(downloadComplianceReport)).Methods("GET")
+	api.BaseRoutes.Admin.Handle("/upload_brand_image", api.ApiAdminSystemRequired(uploadBrandImage)).Methods("POST")
+	api.BaseRoutes.Admin.Handle("/get_brand_image", api.ApiAppHandlerTrustRequester(getBrandImage)).Methods("GET")
+	api.BaseRoutes.Admin.Handle("/reset_mfa", api.ApiAdminSystemRequired(adminResetMfa)).Methods("POST")
+	api.BaseRoutes.Admin.Handle("/reset_password", api.ApiAdminSystemRequired(adminResetPassword)).Methods("POST")
+	api.BaseRoutes.Admin.Handle("/ldap_sync_now", api.ApiAdminSystemRequired(ldapSyncNow)).Methods("POST")
+	api.BaseRoutes.Admin.Handle("/ldap_test", api.ApiAdminSystemRequired(ldapTest)).Methods("POST")
+	api.BaseRoutes.Admin.Handle("/saml_metadata", api.ApiAppHandler(samlMetadata)).Methods("GET")
+	api.BaseRoutes.Admin.Handle("/add_certificate", api.ApiAdminSystemRequired(addCertificate)).Methods("POST")
+	api.BaseRoutes.Admin.Handle("/remove_certificate", api.ApiAdminSystemRequired(removeCertificate)).Methods("POST")
+	api.BaseRoutes.Admin.Handle("/saml_cert_status", api.ApiAdminSystemRequired(samlCertificateStatus)).Methods("GET")
+	api.BaseRoutes.Admin.Handle("/cluster_status", api.ApiAdminSystemRequired(getClusterStatus)).Methods("GET")
+	api.BaseRoutes.Admin.Handle("/recently_active_users/{team_id:[A-Za-z0-9]+}", api.ApiUserRequired(getRecentlyActiveUsers)).Methods("GET")
 }
 
 func getLogs(c *Context, w http.ResponseWriter, r *http.Request) {
-
-	if !c.HasSystemAdminPermissions("getLogs") {
+	lines, err := c.App.GetLogs(0, 10000)
+	if err != nil {
+		c.Err = err
 		return
-	}
-
-	var lines []string
-
-	if utils.Cfg.LogSettings.EnableFile {
-
-		file, err := os.Open(utils.GetLogFileLocation(utils.Cfg.LogSettings.FileLocation))
-		if err != nil {
-			c.Err = model.NewLocAppError("getLogs", "api.admin.file_read_error", nil, err.Error())
-		}
-
-		defer file.Close()
-
-		scanner := bufio.NewScanner(file)
-		for scanner.Scan() {
-			lines = append(lines, scanner.Text())
-		}
-	} else {
-		lines = append(lines, "")
 	}
 
 	w.Write([]byte(model.ArrayToJson(lines)))
 }
 
-func getAllAudits(c *Context, w http.ResponseWriter, r *http.Request) {
+func getClusterStatus(c *Context, w http.ResponseWriter, r *http.Request) {
+	infos := c.App.GetClusterStatus()
 
-	if !c.HasSystemAdminPermissions("getAllAudits") {
-		return
+	if c.App.Cluster != nil {
+		w.Header().Set(model.HEADER_CLUSTER_ID, c.App.Cluster.GetClusterId())
 	}
 
-	if result := <-Srv.Store.Audit().Get("", 200); result.Err != nil {
-		c.Err = result.Err
+	w.Write([]byte(model.ClusterInfosToJson(infos)))
+}
+
+func getAllAudits(c *Context, w http.ResponseWriter, r *http.Request) {
+	if audits, err := c.App.GetAudits("", 200); err != nil {
+		c.Err = err
+		return
+	} else if c.HandleEtag(audits.Etag(), "Get All Audits", w, r) {
 		return
 	} else {
-		audits := result.Data.(model.Audits)
 		etag := audits.Etag()
-
-		if HandleEtag(etag, w, r) {
-			return
-		}
-
 		if len(etag) > 0 {
 			w.Header().Set(model.HEADER_ETAG_SERVER, etag)
 		}
@@ -102,106 +79,65 @@ func getAllAudits(c *Context, w http.ResponseWriter, r *http.Request) {
 }
 
 func getConfig(c *Context, w http.ResponseWriter, r *http.Request) {
-	if !c.HasSystemAdminPermissions("getConfig") {
-		return
-	}
-
-	json := utils.Cfg.ToJson()
-	cfg := model.ConfigFromJson(strings.NewReader(json))
-
-	cfg.Sanitize()
-
+	cfg := c.App.GetConfig()
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	w.Write([]byte(cfg.ToJson()))
 }
 
 func reloadConfig(c *Context, w http.ResponseWriter, r *http.Request) {
-	if !c.HasSystemAdminPermissions("reloadConfig") {
+	c.App.ReloadConfig()
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	ReturnStatusOK(w)
+}
+
+func invalidateAllCaches(c *Context, w http.ResponseWriter, r *http.Request) {
+	err := c.App.InvalidateAllCaches()
+	if err != nil {
+		c.Err = err
 		return
 	}
 
-	utils.LoadConfig(utils.CfgFileName)
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	ReturnStatusOK(w)
 }
 
 func saveConfig(c *Context, w http.ResponseWriter, r *http.Request) {
-	if !c.HasSystemAdminPermissions("getConfig") {
-		return
-	}
-
 	cfg := model.ConfigFromJson(r.Body)
 	if cfg == nil {
 		c.SetInvalidParam("saveConfig", "config")
 		return
 	}
 
-	cfg.SetDefaults()
-	utils.Desanitize(cfg)
+	// Do not allow plugin uploads to be toggled through the API
+	cfg.PluginSettings.EnableUploads = c.App.GetConfig().PluginSettings.EnableUploads
 
-	if err := cfg.IsValid(); err != nil {
-		c.Err = err
-		return
-	}
-
-	if err := utils.ValidateLdapFilter(cfg); err != nil {
+	err := c.App.SaveConfig(cfg, true)
+	if err != nil {
 		c.Err = err
 		return
 	}
 
 	c.LogAudit("")
-
-	utils.SaveConfig(utils.CfgFileName, cfg)
-	utils.LoadConfig(utils.CfgFileName)
-
-	rdata := map[string]string{}
-	rdata["status"] = "OK"
-	w.Write([]byte(model.MapToJson(rdata)))
+	ReturnStatusOK(w)
 }
 
 func recycleDatabaseConnection(c *Context, w http.ResponseWriter, r *http.Request) {
-	if !c.HasSystemAdminPermissions("recycleDatabaseConnection") {
-		return
-	}
-
-	oldStore := Srv.Store
-
-	l4g.Warn(utils.T("api.admin.recycle_db_start.warn"))
-	Srv.Store = store.NewSqlStore()
-
-	time.Sleep(20 * time.Second)
-	oldStore.Close()
-
-	l4g.Warn(utils.T("api.admin.recycle_db_end.warn"))
-
+	c.App.RecycleDatabaseConnection()
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	ReturnStatusOK(w)
 }
 
 func testEmail(c *Context, w http.ResponseWriter, r *http.Request) {
-	if !c.HasSystemAdminPermissions("testEmail") {
-		return
-	}
-
 	cfg := model.ConfigFromJson(r.Body)
 	if cfg == nil {
 		c.SetInvalidParam("testEmail", "config")
 		return
 	}
 
-	if len(cfg.EmailSettings.SMTPServer) == 0 {
-		c.Err = model.NewLocAppError("testEmail", "api.admin.test_email.missing_server", nil, utils.T("api.context.invalid_param.app_error", map[string]interface{}{"Name": "SMTPServer"}))
+	err := c.App.TestEmail(c.Session.UserId, cfg)
+	if err != nil {
+		c.Err = err
 		return
-	}
-
-	if result := <-Srv.Store.User().Get(c.Session.UserId); result.Err != nil {
-		c.Err = result.Err
-		return
-	} else {
-		if err := utils.SendMailUsingConfig(result.Data.(*model.User).Email, c.T("api.admin.test_email.subject"), c.T("api.admin.test_email.body"), cfg); err != nil {
-			c.Err = err
-			return
-		}
 	}
 
 	m := make(map[string]string)
@@ -210,34 +146,15 @@ func testEmail(c *Context, w http.ResponseWriter, r *http.Request) {
 }
 
 func getComplianceReports(c *Context, w http.ResponseWriter, r *http.Request) {
-	if !c.HasSystemAdminPermissions("getComplianceReports") {
+	crs, err := c.App.GetComplianceReports(0, 10000)
+	if err != nil {
+		c.Err = err
 		return
 	}
-
-	if !*utils.Cfg.ComplianceSettings.Enable || !utils.IsLicensed || !*utils.License.Features.Compliance {
-		c.Err = model.NewLocAppError("getComplianceReports", "ent.compliance.licence_disable.app_error", nil, "")
-		return
-	}
-
-	if result := <-Srv.Store.Compliance().GetAll(); result.Err != nil {
-		c.Err = result.Err
-		return
-	} else {
-		crs := result.Data.(model.Compliances)
-		w.Write([]byte(crs.ToJson()))
-	}
+	w.Write([]byte(crs.ToJson()))
 }
 
 func saveComplianceReport(c *Context, w http.ResponseWriter, r *http.Request) {
-	if !c.HasSystemAdminPermissions("getComplianceReports") {
-		return
-	}
-
-	if !*utils.Cfg.ComplianceSettings.Enable || !utils.IsLicensed || !*utils.License.Features.Compliance || einterfaces.GetComplianceInterface() == nil {
-		c.Err = model.NewLocAppError("saveComplianceReport", "ent.compliance.licence_disable.app_error", nil, "")
-		return
-	}
-
 	job := model.ComplianceFromJson(r.Body)
 	if job == nil {
 		c.SetInvalidParam("saveComplianceReport", "compliance")
@@ -245,29 +162,18 @@ func saveComplianceReport(c *Context, w http.ResponseWriter, r *http.Request) {
 	}
 
 	job.UserId = c.Session.UserId
-	job.Type = model.COMPLIANCE_TYPE_ADHOC
 
-	if result := <-Srv.Store.Compliance().Save(job); result.Err != nil {
-		c.Err = result.Err
+	rjob, err := c.App.SaveComplianceReport(job)
+	if err != nil {
+		c.Err = err
 		return
-	} else {
-		job = result.Data.(*model.Compliance)
-		go einterfaces.GetComplianceInterface().RunComplianceJob(job)
 	}
 
-	w.Write([]byte(job.ToJson()))
+	c.LogAudit("")
+	w.Write([]byte(rjob.ToJson()))
 }
 
 func downloadComplianceReport(c *Context, w http.ResponseWriter, r *http.Request) {
-	if !c.HasSystemAdminPermissions("downloadComplianceReport") {
-		return
-	}
-
-	if !*utils.Cfg.ComplianceSettings.Enable || !utils.IsLicensed || !*utils.License.Features.Compliance || einterfaces.GetComplianceInterface() == nil {
-		c.Err = model.NewLocAppError("downloadComplianceReport", "ent.compliance.licence_disable.app_error", nil, "")
-		return
-	}
-
 	params := mux.Vars(r)
 
 	id := params["id"]
@@ -276,190 +182,64 @@ func downloadComplianceReport(c *Context, w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if result := <-Srv.Store.Compliance().Get(id); result.Err != nil {
-		c.Err = result.Err
+	job, err := c.App.GetComplianceReport(id)
+	if err != nil {
+		c.Err = err
 		return
-	} else {
-		job := result.Data.(*model.Compliance)
-		c.LogAudit("downloaded " + job.Desc)
-
-		if f, err := ioutil.ReadFile(*utils.Cfg.ComplianceSettings.Directory + "compliance/" + job.JobName() + ".zip"); err != nil {
-			c.Err = model.NewLocAppError("readFile", "api.file.read_file.reading_local.app_error", nil, err.Error())
-			return
-		} else {
-			w.Header().Set("Cache-Control", "max-age=2592000, public")
-			w.Header().Set("Content-Length", strconv.Itoa(len(f)))
-			w.Header().Del("Content-Type") // Content-Type will be set automatically by the http writer
-
-			// attach extra headers to trigger a download on IE, Edge, and Safari
-			ua := user_agent.New(r.UserAgent())
-			bname, _ := ua.Browser()
-
-			w.Header().Set("Content-Disposition", "attachment;filename=\""+job.JobName()+".zip\"")
-
-			if bname == "Edge" || bname == "Internet Explorer" || bname == "Safari" {
-				// trim off anything before the final / so we just get the file's name
-				w.Header().Set("Content-Type", "application/octet-stream")
-			}
-
-			w.Write(f)
-		}
 	}
+
+	reportBytes, err := c.App.GetComplianceFile(job)
+	if err != nil {
+		c.Err = err
+		return
+	}
+
+	c.LogAudit("downloaded " + job.Desc)
+
+	w.Header().Set("Cache-Control", "max-age=2592000, public")
+	w.Header().Set("Content-Length", strconv.Itoa(len(reportBytes)))
+	w.Header().Del("Content-Type") // Content-Type will be set automatically by the http writer
+
+	// attach extra headers to trigger a download on IE, Edge, and Safari
+	ua := uasurfer.Parse(r.UserAgent())
+
+	w.Header().Set("Content-Disposition", "attachment;filename=\""+job.JobName()+".zip\"")
+
+	if ua.Browser.Name == uasurfer.BrowserIE || ua.Browser.Name == uasurfer.BrowserSafari {
+		// trim off anything before the final / so we just get the file's name
+		w.Header().Set("Content-Type", "application/octet-stream")
+	}
+
+	w.Write(reportBytes)
 }
 
 func getAnalytics(c *Context, w http.ResponseWriter, r *http.Request) {
-	if !c.HasSystemAdminPermissions("getAnalytics") {
-		return
-	}
-
 	params := mux.Vars(r)
 	teamId := params["id"]
 	name := params["name"]
 
-	if name == "standard" {
-		var rows model.AnalyticsRows = make([]*model.AnalyticsRow, 5)
-		rows[0] = &model.AnalyticsRow{"channel_open_count", 0}
-		rows[1] = &model.AnalyticsRow{"channel_private_count", 0}
-		rows[2] = &model.AnalyticsRow{"post_count", 0}
-		rows[3] = &model.AnalyticsRow{"unique_user_count", 0}
-		rows[4] = &model.AnalyticsRow{"team_count", 0}
-
-		openChan := Srv.Store.Channel().AnalyticsTypeCount(teamId, model.CHANNEL_OPEN)
-		privateChan := Srv.Store.Channel().AnalyticsTypeCount(teamId, model.CHANNEL_PRIVATE)
-		postChan := Srv.Store.Post().AnalyticsPostCount(teamId, false, false)
-		userChan := Srv.Store.User().AnalyticsUniqueUserCount(teamId)
-		teamChan := Srv.Store.Team().AnalyticsTeamCount()
-
-		if r := <-openChan; r.Err != nil {
-			c.Err = r.Err
-			return
-		} else {
-			rows[0].Value = float64(r.Data.(int64))
-		}
-
-		if r := <-privateChan; r.Err != nil {
-			c.Err = r.Err
-			return
-		} else {
-			rows[1].Value = float64(r.Data.(int64))
-		}
-
-		if r := <-postChan; r.Err != nil {
-			c.Err = r.Err
-			return
-		} else {
-			rows[2].Value = float64(r.Data.(int64))
-		}
-
-		if r := <-userChan; r.Err != nil {
-			c.Err = r.Err
-			return
-		} else {
-			rows[3].Value = float64(r.Data.(int64))
-		}
-
-		if r := <-teamChan; r.Err != nil {
-			c.Err = r.Err
-			return
-		} else {
-			rows[4].Value = float64(r.Data.(int64))
-		}
-
-		w.Write([]byte(rows.ToJson()))
-	} else if name == "post_counts_day" {
-		if r := <-Srv.Store.Post().AnalyticsPostCountsByDay(teamId); r.Err != nil {
-			c.Err = r.Err
-			return
-		} else {
-			w.Write([]byte(r.Data.(model.AnalyticsRows).ToJson()))
-		}
-	} else if name == "user_counts_with_posts_day" {
-		if r := <-Srv.Store.Post().AnalyticsUserCountsWithPostsByDay(teamId); r.Err != nil {
-			c.Err = r.Err
-			return
-		} else {
-			w.Write([]byte(r.Data.(model.AnalyticsRows).ToJson()))
-		}
-	} else if name == "extra_counts" {
-		var rows model.AnalyticsRows = make([]*model.AnalyticsRow, 6)
-		rows[0] = &model.AnalyticsRow{"file_post_count", 0}
-		rows[1] = &model.AnalyticsRow{"hashtag_post_count", 0}
-		rows[2] = &model.AnalyticsRow{"incoming_webhook_count", 0}
-		rows[3] = &model.AnalyticsRow{"outgoing_webhook_count", 0}
-		rows[4] = &model.AnalyticsRow{"command_count", 0}
-		rows[5] = &model.AnalyticsRow{"session_count", 0}
-
-		fileChan := Srv.Store.Post().AnalyticsPostCount(teamId, true, false)
-		hashtagChan := Srv.Store.Post().AnalyticsPostCount(teamId, false, true)
-		iHookChan := Srv.Store.Webhook().AnalyticsIncomingCount(teamId)
-		oHookChan := Srv.Store.Webhook().AnalyticsOutgoingCount(teamId)
-		commandChan := Srv.Store.Command().AnalyticsCommandCount(teamId)
-		sessionChan := Srv.Store.Session().AnalyticsSessionCount()
-
-		if r := <-fileChan; r.Err != nil {
-			c.Err = r.Err
-			return
-		} else {
-			rows[0].Value = float64(r.Data.(int64))
-		}
-
-		if r := <-hashtagChan; r.Err != nil {
-			c.Err = r.Err
-			return
-		} else {
-			rows[1].Value = float64(r.Data.(int64))
-		}
-
-		if r := <-iHookChan; r.Err != nil {
-			c.Err = r.Err
-			return
-		} else {
-			rows[2].Value = float64(r.Data.(int64))
-		}
-
-		if r := <-oHookChan; r.Err != nil {
-			c.Err = r.Err
-			return
-		} else {
-			rows[3].Value = float64(r.Data.(int64))
-		}
-
-		if r := <-commandChan; r.Err != nil {
-			c.Err = r.Err
-			return
-		} else {
-			rows[4].Value = float64(r.Data.(int64))
-		}
-
-		if r := <-sessionChan; r.Err != nil {
-			c.Err = r.Err
-			return
-		} else {
-			rows[5].Value = float64(r.Data.(int64))
-		}
-
-		w.Write([]byte(rows.ToJson()))
-	} else {
-		c.SetInvalidParam("getAnalytics", "name")
+	rows, err := c.App.GetAnalytics(name, teamId)
+	if err != nil {
+		c.Err = err
+		return
 	}
 
+	if rows == nil {
+		c.SetInvalidParam("getAnalytics", "name")
+		return
+	}
+
+	w.Write([]byte(rows.ToJson()))
 }
 
 func uploadBrandImage(c *Context, w http.ResponseWriter, r *http.Request) {
-	if len(utils.Cfg.FileSettings.DriverName) == 0 {
-		c.Err = model.NewLocAppError("uploadBrandImage", "api.admin.upload_brand_image.storage.app_error", nil, "")
-		c.Err.StatusCode = http.StatusNotImplemented
+	if r.ContentLength > *c.App.Config().FileSettings.MaxFileSize {
+		c.Err = model.NewAppError("uploadBrandImage", "api.admin.upload_brand_image.too_large.app_error", nil, "", http.StatusRequestEntityTooLarge)
 		return
 	}
 
-	if r.ContentLength > *utils.Cfg.FileSettings.MaxFileSize {
-		c.Err = model.NewLocAppError("uploadBrandImage", "api.admin.upload_brand_image.too_large.app_error", nil, "")
-		c.Err.StatusCode = http.StatusRequestEntityTooLarge
-		return
-	}
-
-	if err := r.ParseMultipartForm(*utils.Cfg.FileSettings.MaxFileSize); err != nil {
-		c.Err = model.NewLocAppError("uploadBrandImage", "api.admin.upload_brand_image.parse.app_error", nil, "")
+	if err := r.ParseMultipartForm(*c.App.Config().FileSettings.MaxFileSize); err != nil {
+		c.Err = model.NewAppError("uploadBrandImage", "api.admin.upload_brand_image.parse.app_error", nil, "", http.StatusBadRequest)
 		return
 	}
 
@@ -467,51 +247,29 @@ func uploadBrandImage(c *Context, w http.ResponseWriter, r *http.Request) {
 
 	imageArray, ok := m.File["image"]
 	if !ok {
-		c.Err = model.NewLocAppError("uploadBrandImage", "api.admin.upload_brand_image.no_file.app_error", nil, "")
+		c.Err = model.NewAppError("uploadBrandImage", "api.admin.upload_brand_image.no_file.app_error", nil, "", http.StatusBadRequest)
 		c.Err.StatusCode = http.StatusBadRequest
 		return
 	}
 
 	if len(imageArray) <= 0 {
-		c.Err = model.NewLocAppError("uploadBrandImage", "api.admin.upload_brand_image.array.app_error", nil, "")
+		c.Err = model.NewAppError("uploadBrandImage", "api.admin.upload_brand_image.array.app_error", nil, "", http.StatusBadRequest)
 		c.Err.StatusCode = http.StatusBadRequest
 		return
 	}
 
-	brandInterface := einterfaces.GetBrandInterface()
-	if brandInterface == nil {
-		c.Err = model.NewLocAppError("uploadBrandImage", "api.admin.upload_brand_image.not_available.app_error", nil, "")
-		c.Err.StatusCode = http.StatusNotImplemented
-		return
-	}
-
-	if err := brandInterface.SaveBrandImage(imageArray[0]); err != nil {
+	if err := c.App.SaveBrandImage(imageArray[0]); err != nil {
 		c.Err = err
 		return
 	}
 
 	c.LogAudit("")
 
-	rdata := map[string]string{}
-	rdata["status"] = "OK"
-	w.Write([]byte(model.MapToJson(rdata)))
+	ReturnStatusOK(w)
 }
 
 func getBrandImage(c *Context, w http.ResponseWriter, r *http.Request) {
-	if len(utils.Cfg.FileSettings.DriverName) == 0 {
-		c.Err = model.NewLocAppError("getBrandImage", "api.admin.get_brand_image.storage.app_error", nil, "")
-		c.Err.StatusCode = http.StatusNotImplemented
-		return
-	}
-
-	brandInterface := einterfaces.GetBrandInterface()
-	if brandInterface == nil {
-		c.Err = model.NewLocAppError("getBrandImage", "api.admin.get_brand_image.not_available.app_error", nil, "")
-		c.Err.StatusCode = http.StatusNotImplemented
-		return
-	}
-
-	if img, err := brandInterface.GetBrandImage(); err != nil {
+	if img, err := c.App.GetBrandImage(); err != nil {
 		w.Write(nil)
 	} else {
 		w.Header().Set("Content-Type", "image/png")
@@ -528,7 +286,7 @@ func adminResetMfa(c *Context, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := DeactivateMfa(userId); err != nil {
+	if err := c.App.DeactivateMfa(userId); err != nil {
 		c.Err = err
 		return
 	}
@@ -550,13 +308,12 @@ func adminResetPassword(c *Context, w http.ResponseWriter, r *http.Request) {
 	}
 
 	newPassword := props["new_password"]
-	if err := utils.IsPasswordValid(newPassword); err != nil {
+	if err := c.App.IsPasswordValid(newPassword); err != nil {
 		c.Err = err
-		c.SetInvalidParam("adminResetPassword", "new_password")
 		return
 	}
 
-	if err := ResetPassword(c, userId, newPassword); err != nil {
+	if err := c.App.UpdatePasswordByUserIdSendEmail(userId, newPassword, c.T("api.user.reset_password.method")); err != nil {
 		c.Err = err
 		return
 	}
@@ -569,19 +326,18 @@ func adminResetPassword(c *Context, w http.ResponseWriter, r *http.Request) {
 }
 
 func ldapSyncNow(c *Context, w http.ResponseWriter, r *http.Request) {
-	go func() {
-		if utils.IsLicensed && *utils.License.Features.LDAP && *utils.Cfg.LdapSettings.Enable {
-			if ldapI := einterfaces.GetLdapInterface(); ldapI != nil {
-				if err := ldapI.Syncronize(); err != nil {
-					l4g.Error("%v", err.Error())
-				} else {
-					l4g.Info(utils.T("ent.ldap.syncdone.info"))
-				}
-			} else {
-				l4g.Error("%v", model.NewLocAppError("saveComplianceReport", "ent.compliance.licence_disable.app_error", nil, "").Error())
-			}
-		}
-	}()
+	c.App.SyncLdap()
+
+	rdata := map[string]string{}
+	rdata["status"] = "ok"
+	w.Write([]byte(model.MapToJson(rdata)))
+}
+
+func ldapTest(c *Context, w http.ResponseWriter, r *http.Request) {
+	if err := c.App.TestLdap(); err != nil {
+		c.Err = err
+		return
+	}
 
 	rdata := map[string]string{}
 	rdata["status"] = "ok"
@@ -589,16 +345,8 @@ func ldapSyncNow(c *Context, w http.ResponseWriter, r *http.Request) {
 }
 
 func samlMetadata(c *Context, w http.ResponseWriter, r *http.Request) {
-	samlInterface := einterfaces.GetSamlInterface()
-
-	if samlInterface == nil {
-		c.Err = model.NewLocAppError("loginWithSaml", "api.admin.saml.not_available.app_error", nil, "")
-		c.Err.StatusCode = http.StatusFound
-		return
-	}
-
-	if result, err := samlInterface.GetMetadata(); err != nil {
-		c.Err = model.NewLocAppError("loginWithSaml", "api.admin.saml.metadata.app_error", nil, "err="+err.Message)
+	if result, err := c.App.GetSamlMetadata(); err != nil {
+		c.Err = model.NewAppError("loginWithSaml", "api.admin.saml.metadata.app_error", nil, "err="+err.Message, http.StatusInternalServerError)
 		return
 	} else {
 		w.Header().Set("Content-Type", "application/xml")
@@ -608,7 +356,7 @@ func samlMetadata(c *Context, w http.ResponseWriter, r *http.Request) {
 }
 
 func addCertificate(c *Context, w http.ResponseWriter, r *http.Request) {
-	err := r.ParseMultipartForm(*utils.Cfg.FileSettings.MaxFileSize)
+	err := r.ParseMultipartForm(*c.App.Config().FileSettings.MaxFileSize)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -618,45 +366,57 @@ func addCertificate(c *Context, w http.ResponseWriter, r *http.Request) {
 
 	fileArray, ok := m.File["certificate"]
 	if !ok {
-		c.Err = model.NewLocAppError("addCertificate", "api.admin.add_certificate.no_file.app_error", nil, "")
+		c.Err = model.NewAppError("addCertificate", "api.admin.add_certificate.no_file.app_error", nil, "", http.StatusBadRequest)
 		c.Err.StatusCode = http.StatusBadRequest
 		return
 	}
 
 	if len(fileArray) <= 0 {
-		c.Err = model.NewLocAppError("addCertificate", "api.admin.add_certificate.array.app_error", nil, "")
+		c.Err = model.NewAppError("addCertificate", "api.admin.add_certificate.array.app_error", nil, "", http.StatusBadRequest)
 		c.Err.StatusCode = http.StatusBadRequest
 		return
 	}
 
 	fileData := fileArray[0]
 
-	file, err := fileData.Open()
-	defer file.Close()
-	if err != nil {
-		c.Err = model.NewLocAppError("addCertificate", "api.admin.add_certificate.open.app_error", nil, err.Error())
+	if err := app.WriteSamlFile(fileData); err != nil {
+		c.Err = err
 		return
 	}
-
-	out, err := os.Create(utils.FindDir("config") + fileData.Filename)
-	if err != nil {
-		c.Err = model.NewLocAppError("addCertificate", "api.admin.add_certificate.saving.app_error", nil, err.Error())
-		return
-	}
-	defer out.Close()
-
-	io.Copy(out, file)
 	ReturnStatusOK(w)
 }
 
 func removeCertificate(c *Context, w http.ResponseWriter, r *http.Request) {
 	props := model.MapFromJson(r.Body)
 
-	filename := props["filename"]
-	if err := os.Remove(utils.FindConfigFile(filename)); err != nil {
-		c.Err = model.NewLocAppError("removeCertificate", "api.admin.remove_certificate.delete.app_error",
-			map[string]interface{}{"Filename": filename}, err.Error())
+	if err := app.RemoveSamlFile(props["filename"]); err != nil {
+		c.Err = err
 		return
 	}
+
 	ReturnStatusOK(w)
+}
+
+func samlCertificateStatus(c *Context, w http.ResponseWriter, r *http.Request) {
+	status := c.App.GetSamlCertificateStatus()
+
+	statusMap := map[string]interface{}{}
+	statusMap["IdpCertificateFile"] = status.IdpCertificateFile
+	statusMap["PrivateKeyFile"] = status.PrivateKeyFile
+	statusMap["PublicCertificateFile"] = status.PublicCertificateFile
+
+	w.Write([]byte(model.StringInterfaceToJson(statusMap)))
+}
+
+func getRecentlyActiveUsers(c *Context, w http.ResponseWriter, r *http.Request) {
+	if profiles, err := c.App.GetRecentlyActiveUsersForTeam(c.TeamId); err != nil {
+		c.Err = err
+		return
+	} else {
+		for _, p := range profiles {
+			sanitizeProfile(c, p)
+		}
+
+		w.Write([]byte(model.UserMapToJson(profiles)))
+	}
 }

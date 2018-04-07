@@ -1,18 +1,21 @@
-// Copyright (c) 2015 Mattermost, Inc. All Rights Reserved.
+// Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See License.txt for license information.
 
 package api
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/mattermost/platform/model"
-	"github.com/mattermost/platform/utils"
+	"github.com/mattermost/mattermost-server/model"
 )
 
 func TestListCommands(t *testing.T) {
 	th := Setup().InitBasic()
+	defer th.TearDown()
+
 	Client := th.BasicClient
 
 	if results, err := Client.ListCommands(); err != nil {
@@ -35,15 +38,17 @@ func TestListCommands(t *testing.T) {
 
 func TestCreateCommand(t *testing.T) {
 	th := Setup().InitBasic().InitSystemAdmin()
+	defer th.TearDown()
+
 	Client := th.BasicClient
 	user := th.SystemAdminUser
 	team := th.SystemAdminTeam
 
-	enableCommands := *utils.Cfg.ServiceSettings.EnableCommands
+	enableCommands := *th.App.Config().ServiceSettings.EnableCommands
 	defer func() {
-		utils.Cfg.ServiceSettings.EnableCommands = &enableCommands
+		th.App.UpdateConfig(func(cfg *model.Config) { cfg.ServiceSettings.EnableCommands = &enableCommands })
 	}()
-	*utils.Cfg.ServiceSettings.EnableCommands = true
+	th.App.UpdateConfig(func(cfg *model.Config) { *cfg.ServiceSettings.EnableCommands = true })
 
 	cmd1 := &model.Command{
 		CreatorId: user.Id,
@@ -98,13 +103,15 @@ func TestCreateCommand(t *testing.T) {
 
 func TestListTeamCommands(t *testing.T) {
 	th := Setup().InitSystemAdmin()
+	defer th.TearDown()
+
 	Client := th.SystemAdminClient
 
-	enableCommands := *utils.Cfg.ServiceSettings.EnableCommands
+	enableCommands := *th.App.Config().ServiceSettings.EnableCommands
 	defer func() {
-		utils.Cfg.ServiceSettings.EnableCommands = &enableCommands
+		th.App.UpdateConfig(func(cfg *model.Config) { cfg.ServiceSettings.EnableCommands = &enableCommands })
 	}()
-	*utils.Cfg.ServiceSettings.EnableCommands = true
+	th.App.UpdateConfig(func(cfg *model.Config) { *cfg.ServiceSettings.EnableCommands = true })
 
 	cmd1 := &model.Command{URL: "http://nowhere.com", Method: model.COMMAND_METHOD_POST, Trigger: "trigger"}
 	cmd1 = Client.Must(Client.CreateCommand(cmd1)).Data.(*model.Command)
@@ -120,15 +127,58 @@ func TestListTeamCommands(t *testing.T) {
 	}
 }
 
+func TestUpdateCommand(t *testing.T) {
+	th := Setup().InitSystemAdmin()
+	defer th.TearDown()
+
+	Client := th.SystemAdminClient
+	user := th.SystemAdminUser
+	team := th.SystemAdminTeam
+
+	enableCommands := *th.App.Config().ServiceSettings.EnableCommands
+	defer func() {
+		th.App.UpdateConfig(func(cfg *model.Config) { cfg.ServiceSettings.EnableCommands = &enableCommands })
+	}()
+	th.App.UpdateConfig(func(cfg *model.Config) { *cfg.ServiceSettings.EnableCommands = true })
+
+	cmd1 := &model.Command{
+		CreatorId: user.Id,
+		TeamId:    team.Id,
+		URL:       "http://nowhere.com",
+		Method:    model.COMMAND_METHOD_POST,
+		Trigger:   "trigger"}
+
+	cmd1 = Client.Must(Client.CreateCommand(cmd1)).Data.(*model.Command)
+
+	cmd2 := &model.Command{
+		CreatorId: user.Id,
+		TeamId:    team.Id,
+		URL:       "http://nowhere.com",
+		Method:    model.COMMAND_METHOD_POST,
+		Trigger:   "trigger2",
+		Token:     cmd1.Token,
+		Id:        cmd1.Id}
+
+	if result, err := Client.UpdateCommand(cmd2); err != nil {
+		t.Fatal(err)
+	} else {
+		if result.Data.(*model.Command).Trigger == cmd1.Trigger {
+			t.Fatal("update didn't work properly")
+		}
+	}
+}
+
 func TestRegenToken(t *testing.T) {
 	th := Setup().InitSystemAdmin()
+	defer th.TearDown()
+
 	Client := th.SystemAdminClient
 
-	enableCommands := *utils.Cfg.ServiceSettings.EnableCommands
+	enableCommands := *th.App.Config().ServiceSettings.EnableCommands
 	defer func() {
-		utils.Cfg.ServiceSettings.EnableCommands = &enableCommands
+		th.App.UpdateConfig(func(cfg *model.Config) { cfg.ServiceSettings.EnableCommands = &enableCommands })
 	}()
-	*utils.Cfg.ServiceSettings.EnableCommands = true
+	th.App.UpdateConfig(func(cfg *model.Config) { *cfg.ServiceSettings.EnableCommands = true })
 
 	cmd := &model.Command{URL: "http://nowhere.com", Method: model.COMMAND_METHOD_POST, Trigger: "trigger"}
 	cmd = Client.Must(Client.CreateCommand(cmd)).Data.(*model.Command)
@@ -146,14 +196,16 @@ func TestRegenToken(t *testing.T) {
 }
 
 func TestDeleteCommand(t *testing.T) {
-	th := Setup().InitSystemAdmin()
+	th := Setup().InitBasic().InitSystemAdmin()
+	defer th.TearDown()
+
 	Client := th.SystemAdminClient
 
-	enableCommands := *utils.Cfg.ServiceSettings.EnableCommands
+	enableCommands := *th.App.Config().ServiceSettings.EnableCommands
 	defer func() {
-		utils.Cfg.ServiceSettings.EnableCommands = &enableCommands
+		th.App.UpdateConfig(func(cfg *model.Config) { *cfg.ServiceSettings.EnableCommands = enableCommands })
 	}()
-	*utils.Cfg.ServiceSettings.EnableCommands = true
+	th.App.UpdateConfig(func(cfg *model.Config) { *cfg.ServiceSettings.EnableCommands = true })
 
 	cmd := &model.Command{URL: "http://nowhere.com", Method: model.COMMAND_METHOD_POST, Trigger: "trigger"}
 	cmd = Client.Must(Client.CreateCommand(cmd)).Data.(*model.Command)
@@ -169,56 +221,90 @@ func TestDeleteCommand(t *testing.T) {
 	if len(cmds) != 0 {
 		t.Fatal("delete didn't work properly")
 	}
+
+	cmd2 := &model.Command{URL: "http://nowhere.com", Method: model.COMMAND_METHOD_POST, Trigger: "trigger2"}
+	cmd2 = Client.Must(Client.CreateCommand(cmd2)).Data.(*model.Command)
+
+	data2 := make(map[string]string)
+	data2["id"] = cmd2.Id
+	if _, err := th.BasicClient.DeleteCommand(data2); err == nil {
+		t.Fatal("Should have errored. Your not allowed to delete other's commands")
+	}
+
+	cmds2 := Client.Must(Client.ListTeamCommands()).Data.([]*model.Command)
+	if len(cmds2) != 1 {
+		t.Fatal("Client was able to delete command without permission.")
+	}
 }
 
 func TestTestCommand(t *testing.T) {
 	th := Setup().InitSystemAdmin()
+	defer th.TearDown()
+
 	Client := th.SystemAdminClient
 	channel1 := th.SystemAdminChannel
 
-	enableCommands := *utils.Cfg.ServiceSettings.EnableCommands
+	enableCommands := *th.App.Config().ServiceSettings.EnableCommands
+	allowedInternalConnections := *th.App.Config().ServiceSettings.AllowedUntrustedInternalConnections
 	defer func() {
-		utils.Cfg.ServiceSettings.EnableCommands = &enableCommands
+		th.App.UpdateConfig(func(cfg *model.Config) { cfg.ServiceSettings.EnableCommands = &enableCommands })
+		th.App.UpdateConfig(func(cfg *model.Config) {
+			cfg.ServiceSettings.AllowedUntrustedInternalConnections = &allowedInternalConnections
+		})
 	}()
-	*utils.Cfg.ServiceSettings.EnableCommands = true
+	th.App.UpdateConfig(func(cfg *model.Config) { *cfg.ServiceSettings.EnableCommands = true })
+	th.App.UpdateConfig(func(cfg *model.Config) { *cfg.ServiceSettings.AllowedUntrustedInternalConnections = "localhost" })
 
 	cmd1 := &model.Command{
-		URL:     "http://localhost" + utils.Cfg.ServiceSettings.ListenAddress + model.API_URL_SUFFIX + "/teams/command_test",
+		URL:     fmt.Sprintf("http://localhost:%v", th.App.Srv.ListenAddr.Port) + model.API_URL_SUFFIX_V3 + "/teams/command_test",
 		Method:  model.COMMAND_METHOD_POST,
-		Trigger: "test",
+		Trigger: "testcommand",
 	}
 
 	cmd1 = Client.Must(Client.CreateCommand(cmd1)).Data.(*model.Command)
 
-	r1 := Client.Must(Client.Command(channel1.Id, "/test", false)).Data.(*model.CommandResponse)
+	r1 := Client.Must(Client.Command(channel1.Id, "/testcommand")).Data.(*model.CommandResponse)
 	if r1 == nil {
 		t.Fatal("Test command failed to execute")
 	}
 
 	time.Sleep(100 * time.Millisecond)
 
-	p1 := Client.Must(Client.GetPosts(channel1.Id, 0, 2, "")).Data.(*model.PostList)
-	if len(p1.Order) != 1 {
-		t.Fatal("Test command failed to send")
+	p1 := Client.Must(Client.GetPosts(channel1.Id, 0, 10, "")).Data.(*model.PostList)
+	// including system 'joined' message
+	if len(p1.Order) != 2 {
+		t.Fatal("Test command response failed to send")
+	}
+
+	cmdPosted := false
+	for _, post := range p1.Posts {
+		if strings.Contains(post.Message, "test command response") {
+			cmdPosted = true
+			break
+		}
+	}
+
+	if !cmdPosted {
+		t.Fatal("Test command response failed to post")
 	}
 
 	cmd2 := &model.Command{
-		URL:     "http://localhost" + utils.Cfg.ServiceSettings.ListenAddress + model.API_URL_SUFFIX + "/teams/command_test",
+		URL:     fmt.Sprintf("http://localhost:%v", th.App.Srv.ListenAddr.Port) + model.API_URL_SUFFIX_V3 + "/teams/command_test",
 		Method:  model.COMMAND_METHOD_GET,
 		Trigger: "test2",
 	}
 
 	cmd2 = Client.Must(Client.CreateCommand(cmd2)).Data.(*model.Command)
 
-	r2 := Client.Must(Client.Command(channel1.Id, "/test2", false)).Data.(*model.CommandResponse)
+	r2 := Client.Must(Client.Command(channel1.Id, "/test2")).Data.(*model.CommandResponse)
 	if r2 == nil {
 		t.Fatal("Test2 command failed to execute")
 	}
 
 	time.Sleep(100 * time.Millisecond)
 
-	p2 := Client.Must(Client.GetPosts(channel1.Id, 0, 2, "")).Data.(*model.PostList)
-	if len(p2.Order) != 2 {
+	p2 := Client.Must(Client.GetPosts(channel1.Id, 0, 10, "")).Data.(*model.PostList)
+	if len(p2.Order) != 3 {
 		t.Fatal("Test command failed to send")
 	}
 }

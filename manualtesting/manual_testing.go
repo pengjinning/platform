@@ -1,19 +1,21 @@
-// Copyright (c) 2015 Mattermost, Inc. All Rights Reserved.
+// Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See License.txt for license information.
 
 package manualtesting
 
 import (
-	l4g "github.com/alecthomas/log4go"
-	"github.com/mattermost/platform/api"
-	"github.com/mattermost/platform/model"
-	"github.com/mattermost/platform/utils"
 	"hash/fnv"
 	"math/rand"
 	"net/http"
 	"net/url"
 	"strconv"
 	"time"
+
+	l4g "github.com/alecthomas/log4go"
+	"github.com/mattermost/mattermost-server/api"
+	"github.com/mattermost/mattermost-server/app"
+	"github.com/mattermost/mattermost-server/model"
+	"github.com/mattermost/mattermost-server/utils"
 )
 
 type TestEnvironment struct {
@@ -26,8 +28,8 @@ type TestEnvironment struct {
 	Request       *http.Request
 }
 
-func InitManualTesting() {
-	api.Srv.Router.Handle("/manualtest", api.AppHandler(manualTest)).Methods("GET")
+func Init(api3 *api.API) {
+	api3.BaseRoutes.Root.Handle("/manualtest", api3.AppHandler(manualTest)).Methods("GET")
 }
 
 func manualTest(c *api.Context, w http.ResponseWriter, r *http.Request) {
@@ -37,7 +39,7 @@ func manualTest(c *api.Context, w http.ResponseWriter, r *http.Request) {
 	// URL Parameters
 	params, err := url.ParseQuery(r.URL.RawQuery)
 	if err != nil {
-		c.Err = model.NewLocAppError("/manual", "manaultesting.manual_test.parse.app_error", nil, "")
+		c.Err = model.NewAppError("/manual", "manaultesting.manual_test.parse.app_error", nil, "", http.StatusBadRequest)
 		return
 	}
 
@@ -53,7 +55,7 @@ func manualTest(c *api.Context, w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create a client for tests to use
-	client := model.NewClient("http://localhost" + utils.Cfg.ServiceSettings.ListenAddress)
+	client := model.NewClient("http://localhost" + *c.App.Config().ServiceSettings.ListenAddress)
 
 	// Check for username parameter and create a user if present
 	username, ok1 := params["username"]
@@ -65,12 +67,12 @@ func manualTest(c *api.Context, w http.ResponseWriter, r *http.Request) {
 		// Create team for testing
 		team := &model.Team{
 			DisplayName: teamDisplayName[0],
-			Name:        utils.RandomName(utils.Range{20, 20}, utils.LOWERCASE),
+			Name:        utils.RandomName(utils.Range{Begin: 20, End: 20}, utils.LOWERCASE),
 			Email:       "success+" + model.NewId() + "simulator.amazonses.com",
 			Type:        model.TEAM_OPEN,
 		}
 
-		if result := <-api.Srv.Store.Team().Save(team); result.Err != nil {
+		if result := <-c.App.Srv.Store.Team().Save(team); result.Err != nil {
 			c.Err = result.Err
 			return
 		} else {
@@ -78,7 +80,7 @@ func manualTest(c *api.Context, w http.ResponseWriter, r *http.Request) {
 			createdTeam := result.Data.(*model.Team)
 
 			channel := &model.Channel{DisplayName: "Town Square", Name: "town-square", Type: model.CHANNEL_OPEN, TeamId: createdTeam.Id}
-			if _, err := api.CreateChannel(c, channel, false); err != nil {
+			if _, err := c.App.CreateChannel(channel, false); err != nil {
 				c.Err = err
 				return
 			}
@@ -90,7 +92,7 @@ func manualTest(c *api.Context, w http.ResponseWriter, r *http.Request) {
 		user := &model.User{
 			Email:    "success+" + model.NewId() + "simulator.amazonses.com",
 			Nickname: username[0],
-			Password: api.USER_PASSWORD}
+			Password: app.USER_PASSWORD}
 
 		result, err := client.CreateUser(user, "")
 		if err != nil {
@@ -98,25 +100,25 @@ func manualTest(c *api.Context, w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		<-api.Srv.Store.User().VerifyEmail(result.Data.(*model.User).Id)
-		<-api.Srv.Store.Team().SaveMember(&model.TeamMember{TeamId: teamID, UserId: result.Data.(*model.User).Id})
+		<-c.App.Srv.Store.User().VerifyEmail(result.Data.(*model.User).Id)
+		<-c.App.Srv.Store.Team().SaveMember(&model.TeamMember{TeamId: teamID, UserId: result.Data.(*model.User).Id}, *c.App.Config().TeamSettings.MaxUsersPerTeam)
 
 		newuser := result.Data.(*model.User)
 		userID = newuser.Id
 
 		// Login as user to generate auth token
-		_, err = client.LoginById(newuser.Id, api.USER_PASSWORD)
+		_, err = client.LoginById(newuser.Id, app.USER_PASSWORD)
 		if err != nil {
 			c.Err = err
 			return
 		}
 
-		// Respond with an auth token this can be overriden by a specific test as required
+		// Respond with an auth token this can be overridden by a specific test as required
 		sessionCookie := &http.Cookie{
 			Name:     model.SESSION_COOKIE_TOKEN,
 			Value:    client.AuthToken,
 			Path:     "/",
-			MaxAge:   *utils.Cfg.ServiceSettings.SessionLengthWebInDays * 60 * 60 * 24,
+			MaxAge:   *c.App.Config().ServiceSettings.SessionLengthWebInDays * 60 * 60 * 24,
 			HttpOnly: true,
 		}
 		http.SetCookie(w, sessionCookie)
@@ -136,36 +138,34 @@ func manualTest(c *api.Context, w http.ResponseWriter, r *http.Request) {
 
 	// Grab the test ID and pick the test
 	testname, ok := params["test"]
-	var err2 *model.AppError
-	switch testname[0] {
-	case "autolink":
-		err2 = testAutoLink(env)
-		// ADD YOUR NEW TEST HERE!
-	case "general":
-		err2 = nil
+	if !ok {
+		c.Err = model.NewAppError("/manual", "manaultesting.manual_test.parse.app_error", nil, "", http.StatusBadRequest)
+		return
 	}
 
-	if err != nil {
-		c.Err = err2
-		return
+	switch testname[0] {
+	case "autolink":
+		c.Err = testAutoLink(env)
+		// ADD YOUR NEW TEST HERE!
+	case "general":
 	}
 }
 
-func getChannelID(channelname string, teamid string, userid string) (id string, err bool) {
+func getChannelID(a *app.App, channelname string, teamid string, userid string) (id string, err bool) {
 	// Grab all the channels
-	result := <-api.Srv.Store.Channel().GetChannels(teamid, userid)
+	result := <-a.Srv.Store.Channel().GetChannels(teamid, userid)
 	if result.Err != nil {
 		l4g.Debug(utils.T("manaultesting.get_channel_id.unable.debug"))
 		return "", false
 	}
 
-	data := result.Data.(*model.ChannelList)
+	data := result.Data.(model.ChannelList)
 
-	for _, channel := range data.Channels {
+	for _, channel := range data {
 		if channel.Name == channelname {
 			return channel.Id, true
 		}
 	}
-	l4g.Debug(utils.T("manaultesting.get_channel_id.no_found.debug"), channelname, strconv.Itoa(len(data.Channels)))
+	l4g.Debug(utils.T("manaultesting.get_channel_id.no_found.debug"), channelname, strconv.Itoa(len(data)))
 	return "", false
 }

@@ -1,45 +1,70 @@
+// Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
+// See License.txt for license information.
+
 package utils
 
 import (
+	"fmt"
 	"io/ioutil"
 	"net/http"
 	"path/filepath"
 	"strings"
 
 	l4g "github.com/alecthomas/log4go"
-	"github.com/mattermost/platform/model"
+	"github.com/mattermost/mattermost-server/model"
 	"github.com/nicksnyder/go-i18n/i18n"
 )
 
 var T i18n.TranslateFunc
+var TDefault i18n.TranslateFunc
 var locales map[string]string = make(map[string]string)
 var settings model.LocalizationSettings
 
 // this functions loads translations from filesystem
 // and assign english while loading server config
-func TranslationsPreInit() {
-	InitTranslationsWithDir("i18n")
+func TranslationsPreInit() error {
+	// Set T even if we fail to load the translations. Lots of shutdown handling code will
+	// segfault trying to handle the error, and the untranslated IDs are strictly better.
 	T = TfuncWithFallback("en")
+	TDefault = TfuncWithFallback("en")
+
+	if err := InitTranslationsWithDir("i18n"); err != nil {
+		return err
+	}
+
+	return nil
 }
 
-func InitTranslations(localizationSettings model.LocalizationSettings) {
+func InitTranslations(localizationSettings model.LocalizationSettings) error {
 	settings = localizationSettings
-	T = GetTranslationsBySystemLocale()
+
+	var err error
+	T, err = GetTranslationsBySystemLocale()
+	return err
 }
 
-func InitTranslationsWithDir(dir string) {
-	i18nDirectory := FindDir(dir)
+func InitTranslationsWithDir(dir string) error {
+	i18nDirectory, found := FindDir(dir)
+	if !found {
+		return fmt.Errorf("Unable to find i18n directory")
+	}
+
 	files, _ := ioutil.ReadDir(i18nDirectory)
 	for _, f := range files {
 		if filepath.Ext(f.Name()) == ".json" {
 			filename := f.Name()
-			locales[strings.Split(filename, ".")[0]] = i18nDirectory + filename
-			i18n.MustLoadTranslationFile(i18nDirectory + filename)
+			locales[strings.Split(filename, ".")[0]] = filepath.Join(i18nDirectory, filename)
+
+			if err := i18n.LoadTranslationFile(filepath.Join(i18nDirectory, filename)); err != nil {
+				return err
+			}
 		}
 	}
+
+	return nil
 }
 
-func GetTranslationsBySystemLocale() i18n.TranslateFunc {
+func GetTranslationsBySystemLocale() (i18n.TranslateFunc, error) {
 	locale := *settings.DefaultServerLocale
 	if _, ok := locales[locale]; !ok {
 		l4g.Error("Failed to load system translations for '%v' attempting to fall back to '%v'", locale, model.DEFAULT_LOCALE)
@@ -47,16 +72,16 @@ func GetTranslationsBySystemLocale() i18n.TranslateFunc {
 	}
 
 	if locales[locale] == "" {
-		panic("Failed to load system translations for '" + model.DEFAULT_LOCALE + "'")
+		return nil, fmt.Errorf("Failed to load system translations for '%v'", model.DEFAULT_LOCALE)
 	}
 
 	translations := TfuncWithFallback(locale)
 	if translations == nil {
-		panic("Failed to load system translations")
+		return nil, fmt.Errorf("Failed to load system translations")
 	}
 
 	l4g.Info(translations("utils.i18n.loaded"), locale, locales[locale])
-	return translations
+	return translations, nil
 }
 
 func GetUserTranslations(locale string) i18n.TranslateFunc {
@@ -68,15 +93,10 @@ func GetUserTranslations(locale string) i18n.TranslateFunc {
 	return translations
 }
 
-func SetTranslations(locale string) i18n.TranslateFunc {
-	translations := TfuncWithFallback(locale)
-	return translations
-}
-
 func GetTranslationsAndLocale(w http.ResponseWriter, r *http.Request) (i18n.TranslateFunc, string) {
 	// This is for checking against locales like pt_BR or zn_CN
 	headerLocaleFull := strings.Split(r.Header.Get("Accept-Language"), ",")[0]
-	// This is for checking agains locales like en, es
+	// This is for checking against locales like en, es
 	headerLocale := strings.Split(strings.Split(r.Header.Get("Accept-Language"), ",")[0], "-")[0]
 	defaultLocale := *settings.DefaultClientLocale
 	if locales[headerLocaleFull] != "" {
@@ -92,6 +112,10 @@ func GetTranslationsAndLocale(w http.ResponseWriter, r *http.Request) (i18n.Tran
 
 	translations := TfuncWithFallback(model.DEFAULT_LOCALE)
 	return translations, model.DEFAULT_LOCALE
+}
+
+func GetSupportedLocales() map[string]string {
+	return locales
 }
 
 func TfuncWithFallback(pref string) i18n.TranslateFunc {

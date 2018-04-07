@@ -1,4 +1,4 @@
-// Copyright (c) 2015 Mattermost, Inc. All Rights Reserved.
+// Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See License.txt for license information.
 
 package model
@@ -28,12 +28,7 @@ func (o Audits) ToJson() string {
 }
 
 func AuditsFromJson(data io.Reader) Audits {
-	decoder := json.NewDecoder(data)
 	var o Audits
-	err := decoder.Decode(&o)
-	if err == nil {
-		return o
-	} else {
-		return nil
-	}
+	json.NewDecoder(data).Decode(&o)
+	return o
 }

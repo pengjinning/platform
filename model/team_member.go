@@ -1,4 +1,4 @@
-// Copyright (c) 2016 Mattermost, Inc. All Rights Reserved.
+// Copyright (c) 2016-present Mattermost, Inc. All Rights Reserved.
 // See License.txt for license information.
 
 package model
@@ -6,11 +6,8 @@ package model
 import (
 	"encoding/json"
 	"io"
+	"net/http"
 	"strings"
-)
-
-const (
-	ROLE_TEAM_ADMIN = "admin"
 )
 
 type TeamMember struct {
@@ -20,24 +17,32 @@ type TeamMember struct {
 	DeleteAt int64  `json:"delete_at"`
 }
 
+type TeamUnread struct {
+	TeamId       string `json:"team_id"`
+	MsgCount     int64  `json:"msg_count"`
+	MentionCount int64  `json:"mention_count"`
+}
+
 func (o *TeamMember) ToJson() string {
-	b, err := json.Marshal(o)
-	if err != nil {
-		return ""
-	} else {
-		return string(b)
-	}
+	b, _ := json.Marshal(o)
+	return string(b)
+}
+
+func (o *TeamUnread) ToJson() string {
+	b, _ := json.Marshal(o)
+	return string(b)
 }
 
 func TeamMemberFromJson(data io.Reader) *TeamMember {
-	decoder := json.NewDecoder(data)
-	var o TeamMember
-	err := decoder.Decode(&o)
-	if err == nil {
-		return &o
-	} else {
-		return nil
-	}
+	var o *TeamMember
+	json.NewDecoder(data).Decode(&o)
+	return o
+}
+
+func TeamUnreadFromJson(data io.Reader) *TeamUnread {
+	var o *TeamUnread
+	json.NewDecoder(data).Decode(&o)
+	return o
 }
 
 func TeamMembersToJson(o []*TeamMember) string {
@@ -49,73 +54,41 @@ func TeamMembersToJson(o []*TeamMember) string {
 }
 
 func TeamMembersFromJson(data io.Reader) []*TeamMember {
-	decoder := json.NewDecoder(data)
 	var o []*TeamMember
-	err := decoder.Decode(&o)
-	if err == nil {
-		return o
+	json.NewDecoder(data).Decode(&o)
+	return o
+}
+
+func TeamsUnreadToJson(o []*TeamUnread) string {
+	if b, err := json.Marshal(o); err != nil {
+		return "[]"
 	} else {
-		return nil
+		return string(b)
 	}
 }
 
-func IsValidTeamRoles(teamRoles string) bool {
-
-	roles := strings.Split(teamRoles, " ")
-
-	for _, r := range roles {
-		if !isValidTeamRole(r) {
-			return false
-		}
-	}
-
-	return true
-}
-
-func isValidTeamRole(role string) bool {
-	if role == "" {
-		return true
-	}
-
-	if role == ROLE_TEAM_ADMIN {
-		return true
-	}
-
-	return false
-}
-
-func IsInTeamRole(teamRoles string, inRole string) bool {
-	roles := strings.Split(teamRoles, " ")
-
-	for _, r := range roles {
-		if r == inRole {
-			return true
-		}
-
-	}
-
-	return false
-}
-
-func (o *TeamMember) IsTeamAdmin() bool {
-	return IsInTeamRole(o.Roles, ROLE_TEAM_ADMIN)
+func TeamsUnreadFromJson(data io.Reader) []*TeamUnread {
+	var o []*TeamUnread
+	json.NewDecoder(data).Decode(&o)
+	return o
 }
 
 func (o *TeamMember) IsValid() *AppError {
 
 	if len(o.TeamId) != 26 {
-		return NewLocAppError("TeamMember.IsValid", "model.team_member.is_valid.team_id.app_error", nil, "")
+		return NewAppError("TeamMember.IsValid", "model.team_member.is_valid.team_id.app_error", nil, "", http.StatusBadRequest)
 	}
 
 	if len(o.UserId) != 26 {
-		return NewLocAppError("TeamMember.IsValid", "model.team_member.is_valid.user_id.app_error", nil, "")
-	}
-
-	for _, role := range strings.Split(o.Roles, " ") {
-		if !(role == "" || role == ROLE_TEAM_ADMIN) {
-			return NewLocAppError("TeamMember.IsValid", "model.team_member.is_valid.role.app_error", nil, "role="+role)
-		}
+		return NewAppError("TeamMember.IsValid", "model.team_member.is_valid.user_id.app_error", nil, "", http.StatusBadRequest)
 	}
 
 	return nil
+}
+
+func (o *TeamMember) PreUpdate() {
+}
+
+func (o *TeamMember) GetRoles() []string {
+	return strings.Fields(o.Roles)
 }

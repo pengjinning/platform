@@ -1,4 +1,4 @@
-// Copyright (c) 2016 Mattermost, Inc. All Rights Reserved.
+// Copyright (c) 2016-present Mattermost, Inc. All Rights Reserved.
 // See License.txt for license information.
 
 package api
@@ -6,27 +6,27 @@ package api
 import (
 	"bytes"
 	"image"
-	"image/color"
 	"image/gif"
-	"image/jpeg"
-	"image/png"
 	"testing"
 	"time"
 
-	"github.com/mattermost/platform/model"
-	"github.com/mattermost/platform/store"
-	"github.com/mattermost/platform/utils"
+	"github.com/mattermost/mattermost-server/app"
+	"github.com/mattermost/mattermost-server/model"
+	"github.com/mattermost/mattermost-server/store"
+	"github.com/mattermost/mattermost-server/utils"
 )
 
 func TestGetEmoji(t *testing.T) {
 	th := Setup().InitBasic()
+	defer th.TearDown()
+
 	Client := th.BasicClient
 
-	EnableCustomEmoji := *utils.Cfg.ServiceSettings.EnableCustomEmoji
+	EnableCustomEmoji := *th.App.Config().ServiceSettings.EnableCustomEmoji
 	defer func() {
-		*utils.Cfg.ServiceSettings.EnableCustomEmoji = EnableCustomEmoji
+		th.App.UpdateConfig(func(cfg *model.Config) { *cfg.ServiceSettings.EnableCustomEmoji = EnableCustomEmoji })
 	}()
-	*utils.Cfg.ServiceSettings.EnableCustomEmoji = true
+	th.App.UpdateConfig(func(cfg *model.Config) { *cfg.ServiceSettings.EnableCustomEmoji = true })
 
 	emojis := []*model.Emoji{
 		{
@@ -44,11 +44,11 @@ func TestGetEmoji(t *testing.T) {
 	}
 
 	for i, emoji := range emojis {
-		emojis[i] = store.Must(Srv.Store.Emoji().Save(emoji)).(*model.Emoji)
+		emojis[i] = store.Must(th.App.Srv.Store.Emoji().Save(emoji)).(*model.Emoji)
 	}
 	defer func() {
 		for _, emoji := range emojis {
-			store.Must(Srv.Store.Emoji().Delete(emoji.Id, time.Now().Unix()))
+			store.Must(th.App.Srv.Store.Emoji().Delete(emoji.Id, time.Now().Unix()))
 		}
 	}()
 
@@ -76,7 +76,7 @@ func TestGetEmoji(t *testing.T) {
 		Name:      model.NewId(),
 		DeleteAt:  1,
 	}
-	deleted = store.Must(Srv.Store.Emoji().Save(deleted)).(*model.Emoji)
+	deleted = store.Must(th.App.Srv.Store.Emoji().Save(deleted)).(*model.Emoji)
 
 	if returnedEmojis, err := Client.ListEmoji(); err != nil {
 		t.Fatal(err)
@@ -91,20 +91,22 @@ func TestGetEmoji(t *testing.T) {
 		}
 
 		if found {
-			t.Fatalf("souldn't have gotten deleted emoji %v", deleted.Id)
+			t.Fatalf("shouldn't have gotten deleted emoji %v", deleted.Id)
 		}
 	}
 }
 
 func TestCreateEmoji(t *testing.T) {
 	th := Setup().InitBasic().InitSystemAdmin()
+	defer th.TearDown()
+
 	Client := th.BasicClient
 
-	EnableCustomEmoji := *utils.Cfg.ServiceSettings.EnableCustomEmoji
+	EnableCustomEmoji := *th.App.Config().ServiceSettings.EnableCustomEmoji
 	defer func() {
-		*utils.Cfg.ServiceSettings.EnableCustomEmoji = EnableCustomEmoji
+		th.App.UpdateConfig(func(cfg *model.Config) { *cfg.ServiceSettings.EnableCustomEmoji = EnableCustomEmoji })
 	}()
-	*utils.Cfg.ServiceSettings.EnableCustomEmoji = false
+	th.App.UpdateConfig(func(cfg *model.Config) { *cfg.ServiceSettings.EnableCustomEmoji = false })
 
 	emoji := &model.Emoji{
 		CreatorId: th.BasicUser.Id,
@@ -112,14 +114,14 @@ func TestCreateEmoji(t *testing.T) {
 	}
 
 	// try to create an emoji when they're disabled
-	if _, err := Client.CreateEmoji(emoji, createTestGif(t, 10, 10), "image.gif"); err == nil {
+	if _, err := Client.CreateEmoji(emoji, utils.CreateTestGif(t, 10, 10), "image.gif"); err == nil {
 		t.Fatal("shouldn't be able to create an emoji when they're disabled")
 	}
 
-	*utils.Cfg.ServiceSettings.EnableCustomEmoji = true
+	th.App.UpdateConfig(func(cfg *model.Config) { *cfg.ServiceSettings.EnableCustomEmoji = true })
 
 	// try to create a valid gif emoji when they're enabled
-	if emojiResult, err := Client.CreateEmoji(emoji, createTestGif(t, 10, 10), "image.gif"); err != nil {
+	if emojiResult, err := Client.CreateEmoji(emoji, utils.CreateTestGif(t, 10, 10), "image.gif"); err != nil {
 		t.Fatal(err)
 	} else {
 		emoji = emojiResult
@@ -130,7 +132,7 @@ func TestCreateEmoji(t *testing.T) {
 		CreatorId: th.BasicUser.Id,
 		Name:      emoji.Name,
 	}
-	if _, err := Client.CreateEmoji(emoji2, createTestGif(t, 10, 10), "image.gif"); err == nil {
+	if _, err := Client.CreateEmoji(emoji2, utils.CreateTestGif(t, 10, 10), "image.gif"); err == nil {
 		t.Fatal("shouldn't be able to create an emoji with a duplicate name")
 	}
 
@@ -141,7 +143,7 @@ func TestCreateEmoji(t *testing.T) {
 		CreatorId: th.BasicUser.Id,
 		Name:      model.NewId(),
 	}
-	if emojiResult, err := Client.CreateEmoji(emoji, createTestAnimatedGif(t, 10, 10, 10), "image.gif"); err != nil {
+	if emojiResult, err := Client.CreateEmoji(emoji, utils.CreateTestAnimatedGif(t, 10, 10, 10), "image.gif"); err != nil {
 		t.Fatal(err)
 	} else {
 		emoji = emojiResult
@@ -153,7 +155,7 @@ func TestCreateEmoji(t *testing.T) {
 		CreatorId: th.BasicUser.Id,
 		Name:      model.NewId(),
 	}
-	if emojiResult, err := Client.CreateEmoji(emoji, createTestJpeg(t, 10, 10), "image.jpeg"); err != nil {
+	if emojiResult, err := Client.CreateEmoji(emoji, utils.CreateTestJpeg(t, 10, 10), "image.jpeg"); err != nil {
 		t.Fatal(err)
 	} else {
 		emoji = emojiResult
@@ -165,7 +167,7 @@ func TestCreateEmoji(t *testing.T) {
 		CreatorId: th.BasicUser.Id,
 		Name:      model.NewId(),
 	}
-	if emojiResult, err := Client.CreateEmoji(emoji, createTestPng(t, 10, 10), "image.png"); err != nil {
+	if emojiResult, err := Client.CreateEmoji(emoji, utils.CreateTestPng(t, 10, 10), "image.png"); err != nil {
 		t.Fatal(err)
 	} else {
 		emoji = emojiResult
@@ -177,8 +179,8 @@ func TestCreateEmoji(t *testing.T) {
 		CreatorId: th.BasicUser.Id,
 		Name:      model.NewId(),
 	}
-	if _, err := Client.CreateEmoji(emoji, createTestGif(t, 1000, 10), "image.gif"); err == nil {
-		t.Fatal("shouldn't be able to create an emoji that's too wide")
+	if _, err := Client.CreateEmoji(emoji, utils.CreateTestGif(t, 1000, 10), "image.gif"); err != nil {
+		t.Fatal("should be able to create an emoji that's too wide by resizing it")
 	}
 
 	// try to create an emoji that's too tall
@@ -186,8 +188,8 @@ func TestCreateEmoji(t *testing.T) {
 		CreatorId: th.BasicUser.Id,
 		Name:      model.NewId(),
 	}
-	if _, err := Client.CreateEmoji(emoji, createTestGif(t, 10, 1000), "image.gif"); err == nil {
-		t.Fatal("shouldn't be able to create an emoji that's too tall")
+	if _, err := Client.CreateEmoji(emoji, utils.CreateTestGif(t, 10, 1000), "image.gif"); err != nil {
+		t.Fatal("should be able to create an emoji that's too tall by resizing it")
 	}
 
 	// try to create an emoji that's too large
@@ -195,7 +197,7 @@ func TestCreateEmoji(t *testing.T) {
 		CreatorId: th.BasicUser.Id,
 		Name:      model.NewId(),
 	}
-	if _, err := Client.CreateEmoji(emoji, createTestAnimatedGif(t, 100, 100, 4000), "image.gif"); err == nil {
+	if _, err := Client.CreateEmoji(emoji, utils.CreateTestAnimatedGif(t, 100, 100, 10000), "image.gif"); err == nil {
 		t.Fatal("shouldn't be able to create an emoji that's too large")
 	}
 
@@ -204,7 +206,7 @@ func TestCreateEmoji(t *testing.T) {
 		CreatorId: th.BasicUser.Id,
 		Name:      model.NewId(),
 	}
-	if _, err := Client.CreateEmoji(emoji, make([]byte, 100, 100), "image.gif"); err == nil {
+	if _, err := Client.CreateEmoji(emoji, make([]byte, 100), "image.gif"); err == nil {
 		t.Fatal("shouldn't be able to create an emoji with non-image data")
 	}
 
@@ -213,31 +215,33 @@ func TestCreateEmoji(t *testing.T) {
 		CreatorId: th.BasicUser2.Id,
 		Name:      model.NewId(),
 	}
-	if _, err := Client.CreateEmoji(emoji, createTestGif(t, 10, 10), "image.gif"); err == nil {
+	if _, err := Client.CreateEmoji(emoji, utils.CreateTestGif(t, 10, 10), "image.gif"); err == nil {
 		t.Fatal("shouldn't be able to create an emoji as another user")
 	}
 }
 
 func TestDeleteEmoji(t *testing.T) {
 	th := Setup().InitBasic().InitSystemAdmin()
+	defer th.TearDown()
+
 	Client := th.BasicClient
 
-	EnableCustomEmoji := *utils.Cfg.ServiceSettings.EnableCustomEmoji
+	EnableCustomEmoji := *th.App.Config().ServiceSettings.EnableCustomEmoji
 	defer func() {
-		*utils.Cfg.ServiceSettings.EnableCustomEmoji = EnableCustomEmoji
+		th.App.UpdateConfig(func(cfg *model.Config) { *cfg.ServiceSettings.EnableCustomEmoji = EnableCustomEmoji })
 	}()
-	*utils.Cfg.ServiceSettings.EnableCustomEmoji = false
+	th.App.UpdateConfig(func(cfg *model.Config) { *cfg.ServiceSettings.EnableCustomEmoji = false })
 
-	emoji1 := createTestEmoji(t, &model.Emoji{
+	emoji1 := createTestEmoji(t, th.App, &model.Emoji{
 		CreatorId: th.BasicUser.Id,
 		Name:      model.NewId(),
-	}, createTestGif(t, 10, 10))
+	}, utils.CreateTestGif(t, 10, 10))
 
 	if _, err := Client.DeleteEmoji(emoji1.Id); err == nil {
 		t.Fatal("shouldn't have been able to delete an emoji when they're disabled")
 	}
 
-	*utils.Cfg.ServiceSettings.EnableCustomEmoji = true
+	th.App.UpdateConfig(func(cfg *model.Config) { *cfg.ServiceSettings.EnableCustomEmoji = true })
 
 	if deleted, err := Client.DeleteEmoji(emoji1.Id); err != nil {
 		t.Fatal(err)
@@ -249,10 +253,10 @@ func TestDeleteEmoji(t *testing.T) {
 		t.Fatal("shouldn't be able to delete an already-deleted emoji")
 	}
 
-	emoji2 := createTestEmoji(t, &model.Emoji{
+	emoji2 := createTestEmoji(t, th.App, &model.Emoji{
 		CreatorId: th.BasicUser2.Id,
 		Name:      model.NewId(),
-	}, createTestGif(t, 10, 10))
+	}, utils.CreateTestGif(t, 10, 10))
 
 	if _, err := Client.DeleteEmoji(emoji2.Id); err == nil {
 		t.Fatal("shouldn't be able to delete another user's emoji")
@@ -265,59 +269,11 @@ func TestDeleteEmoji(t *testing.T) {
 	}
 }
 
-func createTestGif(t *testing.T, width int, height int) []byte {
-	var buffer bytes.Buffer
+func createTestEmoji(t *testing.T, a *app.App, emoji *model.Emoji, imageData []byte) *model.Emoji {
+	emoji = store.Must(a.Srv.Store.Emoji().Save(emoji)).(*model.Emoji)
 
-	if err := gif.Encode(&buffer, image.NewRGBA(image.Rect(0, 0, width, height)), nil); err != nil {
-		t.Fatalf("failed to create gif: %v", err.Error())
-	}
-
-	return buffer.Bytes()
-}
-
-func createTestAnimatedGif(t *testing.T, width int, height int, frames int) []byte {
-	var buffer bytes.Buffer
-
-	img := gif.GIF{
-		Image: make([]*image.Paletted, frames, frames),
-		Delay: make([]int, frames, frames),
-	}
-	for i := 0; i < frames; i++ {
-		img.Image[i] = image.NewPaletted(image.Rect(0, 0, width, height), color.Palette{color.Black})
-		img.Delay[i] = 0
-	}
-	if err := gif.EncodeAll(&buffer, &img); err != nil {
-		t.Fatalf("failed to create animated gif: %v", err.Error())
-	}
-
-	return buffer.Bytes()
-}
-
-func createTestJpeg(t *testing.T, width int, height int) []byte {
-	var buffer bytes.Buffer
-
-	if err := jpeg.Encode(&buffer, image.NewRGBA(image.Rect(0, 0, width, height)), nil); err != nil {
-		t.Fatalf("failed to create jpeg: %v", err.Error())
-	}
-
-	return buffer.Bytes()
-}
-
-func createTestPng(t *testing.T, width int, height int) []byte {
-	var buffer bytes.Buffer
-
-	if err := png.Encode(&buffer, image.NewRGBA(image.Rect(0, 0, width, height))); err != nil {
-		t.Fatalf("failed to create png: %v", err.Error())
-	}
-
-	return buffer.Bytes()
-}
-
-func createTestEmoji(t *testing.T, emoji *model.Emoji, imageData []byte) *model.Emoji {
-	emoji = store.Must(Srv.Store.Emoji().Save(emoji)).(*model.Emoji)
-
-	if err := WriteFile(imageData, "emoji/"+emoji.Id+"/image"); err != nil {
-		store.Must(Srv.Store.Emoji().Delete(emoji.Id, time.Now().Unix()))
+	if err := a.WriteFile(imageData, "emoji/"+emoji.Id+"/image"); err != nil {
+		store.Must(a.Srv.Store.Emoji().Delete(emoji.Id, time.Now().Unix()))
 		t.Fatalf("failed to write image: %v", err.Error())
 	}
 
@@ -326,31 +282,37 @@ func createTestEmoji(t *testing.T, emoji *model.Emoji, imageData []byte) *model.
 
 func TestGetEmojiImage(t *testing.T) {
 	th := Setup().InitBasic()
+	defer th.TearDown()
+
 	Client := th.BasicClient
 
-	EnableCustomEmoji := *utils.Cfg.ServiceSettings.EnableCustomEmoji
-	RestrictCustomEmojiCreation := *utils.Cfg.ServiceSettings.RestrictCustomEmojiCreation
+	EnableCustomEmoji := *th.App.Config().ServiceSettings.EnableCustomEmoji
+	RestrictCustomEmojiCreation := *th.App.Config().ServiceSettings.RestrictCustomEmojiCreation
 	defer func() {
-		*utils.Cfg.ServiceSettings.EnableCustomEmoji = EnableCustomEmoji
-		*utils.Cfg.ServiceSettings.RestrictCustomEmojiCreation = RestrictCustomEmojiCreation
+		th.App.UpdateConfig(func(cfg *model.Config) { *cfg.ServiceSettings.EnableCustomEmoji = EnableCustomEmoji })
+		th.App.UpdateConfig(func(cfg *model.Config) {
+			*cfg.ServiceSettings.RestrictCustomEmojiCreation = RestrictCustomEmojiCreation
+		})
 	}()
-	*utils.Cfg.ServiceSettings.EnableCustomEmoji = true
-	*utils.Cfg.ServiceSettings.RestrictCustomEmojiCreation = model.RESTRICT_EMOJI_CREATION_ALL
+	th.App.UpdateConfig(func(cfg *model.Config) { *cfg.ServiceSettings.EnableCustomEmoji = true })
+	th.App.UpdateConfig(func(cfg *model.Config) {
+		*cfg.ServiceSettings.RestrictCustomEmojiCreation = model.RESTRICT_EMOJI_CREATION_ALL
+	})
 
 	emoji1 := &model.Emoji{
 		CreatorId: th.BasicUser.Id,
 		Name:      model.NewId(),
 	}
-	emoji1 = Client.MustGeneric(Client.CreateEmoji(emoji1, createTestGif(t, 10, 10), "image.gif")).(*model.Emoji)
+	emoji1 = Client.MustGeneric(Client.CreateEmoji(emoji1, utils.CreateTestGif(t, 10, 10), "image.gif")).(*model.Emoji)
 	defer func() { Client.MustGeneric(Client.DeleteEmoji(emoji1.Id)) }()
 
-	*utils.Cfg.ServiceSettings.EnableCustomEmoji = false
+	th.App.UpdateConfig(func(cfg *model.Config) { *cfg.ServiceSettings.EnableCustomEmoji = false })
 
 	if _, err := Client.DoApiGet(Client.GetCustomEmojiImageUrl(emoji1.Id), "", ""); err == nil {
 		t.Fatal("should've failed to get emoji image when disabled")
 	}
 
-	*utils.Cfg.ServiceSettings.EnableCustomEmoji = true
+	th.App.UpdateConfig(func(cfg *model.Config) { *cfg.ServiceSettings.EnableCustomEmoji = true })
 
 	if resp, err := Client.DoApiGet(Client.GetCustomEmojiImageUrl(emoji1.Id), "", ""); err != nil {
 		t.Fatal(err)
@@ -366,7 +328,7 @@ func TestGetEmojiImage(t *testing.T) {
 		CreatorId: th.BasicUser.Id,
 		Name:      model.NewId(),
 	}
-	emoji2 = Client.MustGeneric(Client.CreateEmoji(emoji2, createTestAnimatedGif(t, 10, 10, 10), "image.gif")).(*model.Emoji)
+	emoji2 = Client.MustGeneric(Client.CreateEmoji(emoji2, utils.CreateTestAnimatedGif(t, 10, 10, 10), "image.gif")).(*model.Emoji)
 	defer func() { Client.MustGeneric(Client.DeleteEmoji(emoji2.Id)) }()
 
 	if resp, err := Client.DoApiGet(Client.GetCustomEmojiImageUrl(emoji2.Id), "", ""); err != nil {
@@ -383,7 +345,7 @@ func TestGetEmojiImage(t *testing.T) {
 		CreatorId: th.BasicUser.Id,
 		Name:      model.NewId(),
 	}
-	emoji3 = Client.MustGeneric(Client.CreateEmoji(emoji3, createTestJpeg(t, 10, 10), "image.jpeg")).(*model.Emoji)
+	emoji3 = Client.MustGeneric(Client.CreateEmoji(emoji3, utils.CreateTestJpeg(t, 10, 10), "image.jpeg")).(*model.Emoji)
 	defer func() { Client.MustGeneric(Client.DeleteEmoji(emoji3.Id)) }()
 
 	if resp, err := Client.DoApiGet(Client.GetCustomEmojiImageUrl(emoji3.Id), "", ""); err != nil {
@@ -400,7 +362,7 @@ func TestGetEmojiImage(t *testing.T) {
 		CreatorId: th.BasicUser.Id,
 		Name:      model.NewId(),
 	}
-	emoji4 = Client.MustGeneric(Client.CreateEmoji(emoji4, createTestPng(t, 10, 10), "image.png")).(*model.Emoji)
+	emoji4 = Client.MustGeneric(Client.CreateEmoji(emoji4, utils.CreateTestPng(t, 10, 10), "image.png")).(*model.Emoji)
 	defer func() { Client.MustGeneric(Client.DeleteEmoji(emoji4.Id)) }()
 
 	if resp, err := Client.DoApiGet(Client.GetCustomEmojiImageUrl(emoji4.Id), "", ""); err != nil {
@@ -417,10 +379,59 @@ func TestGetEmojiImage(t *testing.T) {
 		CreatorId: th.BasicUser.Id,
 		Name:      model.NewId(),
 	}
-	emoji5 = Client.MustGeneric(Client.CreateEmoji(emoji5, createTestPng(t, 10, 10), "image.png")).(*model.Emoji)
+	emoji5 = Client.MustGeneric(Client.CreateEmoji(emoji5, utils.CreateTestPng(t, 10, 10), "image.png")).(*model.Emoji)
 	Client.MustGeneric(Client.DeleteEmoji(emoji5.Id))
 
 	if _, err := Client.DoApiGet(Client.GetCustomEmojiImageUrl(emoji5.Id), "", ""); err == nil {
 		t.Fatal("should've failed to get image for deleted emoji")
+	}
+}
+
+func TestResizeEmoji(t *testing.T) {
+	// try to resize a jpeg image within MaxEmojiWidth and MaxEmojiHeight
+	small_img_data := utils.CreateTestJpeg(t, app.MaxEmojiWidth, app.MaxEmojiHeight)
+	if small_img, _, err := image.Decode(bytes.NewReader(small_img_data)); err != nil {
+		t.Fatal("failed to decode jpeg bytes to image.Image")
+	} else {
+		resized_img := resizeEmoji(small_img, small_img.Bounds().Dx(), small_img.Bounds().Dy())
+		if resized_img.Bounds().Dx() > app.MaxEmojiWidth || resized_img.Bounds().Dy() > app.MaxEmojiHeight {
+			t.Fatal("resized jpeg width and height should not be greater than MaxEmojiWidth or MaxEmojiHeight")
+		}
+		if resized_img != small_img {
+			t.Fatal("should've returned small_img itself")
+		}
+	}
+	// try to resize a jpeg image
+	jpeg_data := utils.CreateTestJpeg(t, 256, 256)
+	if jpeg_img, _, err := image.Decode(bytes.NewReader(jpeg_data)); err != nil {
+		t.Fatal("failed to decode jpeg bytes to image.Image")
+	} else {
+		resized_jpeg := resizeEmoji(jpeg_img, jpeg_img.Bounds().Dx(), jpeg_img.Bounds().Dy())
+		if resized_jpeg.Bounds().Dx() > app.MaxEmojiWidth || resized_jpeg.Bounds().Dy() > app.MaxEmojiHeight {
+			t.Fatal("resized jpeg width and height should not be greater than MaxEmojiWidth or MaxEmojiHeight")
+		}
+	}
+	// try to resize a png image
+	png_data := utils.CreateTestJpeg(t, 256, 256)
+	if png_img, _, err := image.Decode(bytes.NewReader(png_data)); err != nil {
+		t.Fatal("failed to decode png bytes to image.Image")
+	} else {
+		resized_png := resizeEmoji(png_img, png_img.Bounds().Dx(), png_img.Bounds().Dy())
+		if resized_png.Bounds().Dx() > app.MaxEmojiWidth || resized_png.Bounds().Dy() > app.MaxEmojiHeight {
+			t.Fatal("resized png width and height should not be greater than MaxEmojiWidth or MaxEmojiHeight")
+		}
+	}
+	// try to resize an animated gif
+	gif_data := utils.CreateTestAnimatedGif(t, 256, 256, 10)
+	if gif_img, err := gif.DecodeAll(bytes.NewReader(gif_data)); err != nil {
+		t.Fatal("failed to decode gif bytes to gif.GIF")
+	} else {
+		resized_gif := resizeEmojiGif(gif_img)
+		if resized_gif.Config.Width > app.MaxEmojiWidth || resized_gif.Config.Height > app.MaxEmojiHeight {
+			t.Fatal("resized gif width and height should not be greater than MaxEmojiWidth or MaxEmojiHeight")
+		}
+		if len(resized_gif.Image) != len(gif_img.Image) {
+			t.Fatal("resized gif should have the same number of frames as original gif")
+		}
 	}
 }

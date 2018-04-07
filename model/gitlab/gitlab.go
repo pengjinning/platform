@@ -1,15 +1,16 @@
-// Copyright (c) 2015 Mattermost, Inc. All Rights Reserved.
+// Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See License.txt for license information.
 
 package oauthgitlab
 
 import (
 	"encoding/json"
-	"github.com/mattermost/platform/einterfaces"
-	"github.com/mattermost/platform/model"
 	"io"
 	"strconv"
 	"strings"
+
+	"github.com/mattermost/mattermost-server/einterfaces"
+	"github.com/mattermost/mattermost-server/model"
 )
 
 type GitLabProvider struct {
@@ -45,7 +46,6 @@ func userFromGitLabUser(glu *GitLabUser) *model.User {
 	} else {
 		user.FirstName = glu.Name
 	}
-	strings.TrimSpace(user.Email)
 	user.Email = glu.Email
 	userId := strconv.FormatInt(glu.Id, 10)
 	user.AuthData = &userId
@@ -62,6 +62,15 @@ func gitLabUserFromJson(data io.Reader) *GitLabUser {
 		return &glu
 	} else {
 		return nil
+	}
+}
+
+func (glu *GitLabUser) ToJson() string {
+	b, err := json.Marshal(glu)
+	if err != nil {
+		return ""
+	} else {
+		return string(b)
 	}
 }
 

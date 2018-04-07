@@ -1,4 +1,4 @@
-// Copyright (c) 2015 Mattermost, Inc. All Rights Reserved.
+// Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See License.txt for license information.
 
 package model
@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"regexp"
 	"strings"
 	"unicode/utf8"
@@ -15,18 +16,36 @@ import (
 )
 
 const (
-	ROLE_SYSTEM_ADMIN          = "system_admin"
-	USER_AWAY_TIMEOUT          = 5 * 60 * 1000 // 5 minutes
-	USER_OFFLINE_TIMEOUT       = 1 * 60 * 1000 // 1 minute
-	USER_OFFLINE               = "offline"
-	USER_AWAY                  = "away"
-	USER_ONLINE                = "online"
-	USER_NOTIFY_ALL            = "all"
-	USER_NOTIFY_MENTION        = "mention"
-	USER_NOTIFY_NONE           = "none"
-	DEFAULT_LOCALE             = "en"
-	USER_AUTH_SERVICE_EMAIL    = "email"
-	USER_AUTH_SERVICE_USERNAME = "username"
+	ME                           = "me"
+	USER_NOTIFY_ALL              = "all"
+	USER_NOTIFY_MENTION          = "mention"
+	USER_NOTIFY_NONE             = "none"
+	DESKTOP_NOTIFY_PROP          = "desktop"
+	DESKTOP_SOUND_NOTIFY_PROP    = "desktop_sound"
+	DESKTOP_DURATION_NOTIFY_PROP = "desktop_duration"
+	MARK_UNREAD_NOTIFY_PROP      = "mark_unread"
+	PUSH_NOTIFY_PROP             = "push"
+	PUSH_STATUS_NOTIFY_PROP      = "push_status"
+	EMAIL_NOTIFY_PROP            = "email"
+	CHANNEL_MENTIONS_NOTIFY_PROP = "channel"
+	COMMENTS_NOTIFY_PROP         = "comments"
+	MENTION_KEYS_NOTIFY_PROP     = "mention_keys"
+	COMMENTS_NOTIFY_NEVER        = "never"
+	COMMENTS_NOTIFY_ROOT         = "root"
+	COMMENTS_NOTIFY_ANY          = "any"
+
+	DEFAULT_LOCALE          = "en"
+	USER_AUTH_SERVICE_EMAIL = "email"
+
+	USER_EMAIL_MAX_LENGTH     = 128
+	USER_NICKNAME_MAX_RUNES   = 64
+	USER_POSITION_MAX_RUNES   = 128
+	USER_FIRST_NAME_MAX_RUNES = 64
+	USER_LAST_NAME_MAX_RUNES  = 64
+	USER_AUTH_DATA_MAX_LENGTH = 128
+	USER_NAME_MAX_LENGTH      = 64
+	USER_NAME_MIN_LENGTH      = 1
+	USER_PASSWORD_MAX_LENGTH  = 72
 )
 
 type User struct {
@@ -43,19 +62,38 @@ type User struct {
 	Nickname           string    `json:"nickname"`
 	FirstName          string    `json:"first_name"`
 	LastName           string    `json:"last_name"`
+	Position           string    `json:"position"`
 	Roles              string    `json:"roles"`
-	LastActivityAt     int64     `json:"last_activity_at,omitempty"`
-	LastPingAt         int64     `json:"last_ping_at,omitempty"`
 	AllowMarketing     bool      `json:"allow_marketing,omitempty"`
 	Props              StringMap `json:"props,omitempty"`
 	NotifyProps        StringMap `json:"notify_props,omitempty"`
-	ThemeProps         StringMap `json:"theme_props,omitempty"`
 	LastPasswordUpdate int64     `json:"last_password_update,omitempty"`
 	LastPictureUpdate  int64     `json:"last_picture_update,omitempty"`
 	FailedAttempts     int       `json:"failed_attempts,omitempty"`
 	Locale             string    `json:"locale"`
+	Timezone           StringMap `json:"timezone"`
 	MfaActive          bool      `json:"mfa_active,omitempty"`
 	MfaSecret          string    `json:"mfa_secret,omitempty"`
+	LastActivityAt     int64     `db:"-" json:"last_activity_at,omitempty"`
+}
+
+type UserPatch struct {
+	Username    *string   `json:"username"`
+	Nickname    *string   `json:"nickname"`
+	FirstName   *string   `json:"first_name"`
+	LastName    *string   `json:"last_name"`
+	Position    *string   `json:"position"`
+	Email       *string   `json:"email"`
+	Props       StringMap `json:"props,omitempty"`
+	NotifyProps StringMap `json:"notify_props,omitempty"`
+	Locale      *string   `json:"locale"`
+	Timezone    StringMap `json:"timezone"`
+}
+
+type UserAuth struct {
+	Password    string  `json:"password,omitempty"`
+	AuthData    *string `json:"auth_data,omitempty"`
+	AuthService string  `json:"auth_service,omitempty"`
 }
 
 // IsValid validates the user and returns an error if it isn't configured
@@ -63,54 +101,75 @@ type User struct {
 func (u *User) IsValid() *AppError {
 
 	if len(u.Id) != 26 {
-		return NewLocAppError("User.IsValid", "model.user.is_valid.id.app_error", nil, "")
+		return InvalidUserError("id", "")
 	}
 
 	if u.CreateAt == 0 {
-		return NewLocAppError("User.IsValid", "model.user.is_valid.create_at.app_error", nil, "user_id="+u.Id)
+		return InvalidUserError("create_at", u.Id)
 	}
 
 	if u.UpdateAt == 0 {
-		return NewLocAppError("User.IsValid", "model.user.is_valid.update_at.app_error", nil, "user_id="+u.Id)
+		return InvalidUserError("update_at", u.Id)
 	}
 
 	if !IsValidUsername(u.Username) {
-		return NewLocAppError("User.IsValid", "model.user.is_valid.username.app_error", nil, "user_id="+u.Id)
+		return InvalidUserError("username", u.Id)
 	}
 
-	if len(u.Email) > 128 || len(u.Email) == 0 {
-		return NewLocAppError("User.IsValid", "model.user.is_valid.email.app_error", nil, "user_id="+u.Id)
+	if len(u.Email) > USER_EMAIL_MAX_LENGTH || len(u.Email) == 0 {
+		return InvalidUserError("email", u.Id)
 	}
 
-	if utf8.RuneCountInString(u.Nickname) > 64 {
-		return NewLocAppError("User.IsValid", "model.user.is_valid.nickname.app_error", nil, "user_id="+u.Id)
+	if utf8.RuneCountInString(u.Nickname) > USER_NICKNAME_MAX_RUNES {
+		return InvalidUserError("nickname", u.Id)
 	}
 
-	if utf8.RuneCountInString(u.FirstName) > 64 {
-		return NewLocAppError("User.IsValid", "model.user.is_valid.first_name.app_error", nil, "user_id="+u.Id)
+	if utf8.RuneCountInString(u.Position) > USER_POSITION_MAX_RUNES {
+		return InvalidUserError("position", u.Id)
 	}
 
-	if utf8.RuneCountInString(u.LastName) > 64 {
-		return NewLocAppError("User.IsValid", "model.user.is_valid.last_name.app_error", nil, "user_id="+u.Id)
+	if utf8.RuneCountInString(u.FirstName) > USER_FIRST_NAME_MAX_RUNES {
+		return InvalidUserError("first_name", u.Id)
 	}
 
-	if u.AuthData != nil && len(*u.AuthData) > 128 {
-		return NewLocAppError("User.IsValid", "model.user.is_valid.auth_data.app_error", nil, "user_id="+u.Id)
+	if utf8.RuneCountInString(u.LastName) > USER_LAST_NAME_MAX_RUNES {
+		return InvalidUserError("last_name", u.Id)
+	}
+
+	if u.AuthData != nil && len(*u.AuthData) > USER_AUTH_DATA_MAX_LENGTH {
+		return InvalidUserError("auth_data", u.Id)
 	}
 
 	if u.AuthData != nil && len(*u.AuthData) > 0 && len(u.AuthService) == 0 {
-		return NewLocAppError("User.IsValid", "model.user.is_valid.auth_data_type.app_error", nil, "user_id="+u.Id)
+		return InvalidUserError("auth_data_type", u.Id)
 	}
 
 	if len(u.Password) > 0 && u.AuthData != nil && len(*u.AuthData) > 0 {
-		return NewLocAppError("User.IsValid", "model.user.is_valid.auth_data_pwd.app_error", nil, "user_id="+u.Id)
+		return InvalidUserError("auth_data_pwd", u.Id)
 	}
 
-	if len(u.ThemeProps) > 2000 {
-		return NewLocAppError("User.IsValid", "model.user.is_valid.theme.app_error", nil, "user_id="+u.Id)
+	if len(u.Password) > USER_PASSWORD_MAX_LENGTH {
+		return InvalidUserError("password_limit", u.Id)
 	}
 
 	return nil
+}
+
+func InvalidUserError(fieldName string, userId string) *AppError {
+	id := fmt.Sprintf("model.user.is_valid.%s.app_error", fieldName)
+	details := ""
+	if userId != "" {
+		details = "user_id=" + userId
+	}
+	return NewAppError("User.IsValid", id, nil, details, http.StatusBadRequest)
+}
+
+func NormalizeUsername(username string) string {
+	return strings.ToLower(username)
+}
+
+func NormalizeEmail(email string) string {
+	return strings.ToLower(email)
 }
 
 // PreSave will set the Id and Username if missing.  It will also fill
@@ -129,8 +188,8 @@ func (u *User) PreSave() {
 		u.AuthData = nil
 	}
 
-	u.Username = strings.ToLower(u.Username)
-	u.Email = strings.ToLower(u.Email)
+	u.Username = NormalizeUsername(u.Username)
+	u.Email = NormalizeEmail(u.Email)
 
 	u.CreateAt = GetMillis()
 	u.UpdateAt = u.CreateAt
@@ -151,6 +210,10 @@ func (u *User) PreSave() {
 		u.SetDefaultNotifications()
 	}
 
+	if u.Timezone == nil {
+		u.Timezone = DefaultUserTimezone()
+	}
+
 	if len(u.Password) > 0 {
 		u.Password = HashPassword(u.Password)
 	}
@@ -158,8 +221,8 @@ func (u *User) PreSave() {
 
 // PreUpdate should be run before updating the user in the db.
 func (u *User) PreUpdate() {
-	u.Username = strings.ToLower(u.Username)
-	u.Email = strings.ToLower(u.Email)
+	u.Username = NormalizeUsername(u.Username)
+	u.Email = NormalizeEmail(u.Email)
 	u.UpdateAt = GetMillis()
 
 	if u.AuthData != nil && *u.AuthData == "" {
@@ -179,37 +242,19 @@ func (u *User) PreUpdate() {
 		}
 		u.NotifyProps["mention_keys"] = strings.Join(goodKeys, ",")
 	}
-
-	if u.ThemeProps != nil {
-		colorPattern := regexp.MustCompile(`^#[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$`)
-
-		// blank out any invalid theme values
-		for name, value := range u.ThemeProps {
-			if name == "image" || name == "type" || name == "codeTheme" {
-				continue
-			}
-
-			if !colorPattern.MatchString(value) {
-				u.ThemeProps[name] = "#ffffff"
-			}
-		}
-	}
 }
 
 func (u *User) SetDefaultNotifications() {
 	u.NotifyProps = make(map[string]string)
 	u.NotifyProps["email"] = "true"
 	u.NotifyProps["push"] = USER_NOTIFY_MENTION
-	u.NotifyProps["desktop"] = USER_NOTIFY_ALL
+	u.NotifyProps["desktop"] = USER_NOTIFY_MENTION
 	u.NotifyProps["desktop_sound"] = "true"
 	u.NotifyProps["mention_keys"] = u.Username + ",@" + u.Username
 	u.NotifyProps["channel"] = "true"
-
-	if u.FirstName == "" {
-		u.NotifyProps["first_name"] = "false"
-	} else {
-		u.NotifyProps["first_name"] = "true"
-	}
+	u.NotifyProps["push_status"] = STATUS_AWAY
+	u.NotifyProps["comments"] = "never"
+	u.NotifyProps["first_name"] = "false"
 }
 
 func (user *User) UpdateMentionKeysFromUsername(oldUsername string) {
@@ -227,14 +272,62 @@ func (user *User) UpdateMentionKeysFromUsername(oldUsername string) {
 	}
 }
 
+func (u *User) Patch(patch *UserPatch) {
+	if patch.Username != nil {
+		u.Username = *patch.Username
+	}
+
+	if patch.Nickname != nil {
+		u.Nickname = *patch.Nickname
+	}
+
+	if patch.FirstName != nil {
+		u.FirstName = *patch.FirstName
+	}
+
+	if patch.LastName != nil {
+		u.LastName = *patch.LastName
+	}
+
+	if patch.Position != nil {
+		u.Position = *patch.Position
+	}
+
+	if patch.Email != nil {
+		u.Email = *patch.Email
+	}
+
+	if patch.Props != nil {
+		u.Props = patch.Props
+	}
+
+	if patch.NotifyProps != nil {
+		u.NotifyProps = patch.NotifyProps
+	}
+
+	if patch.Locale != nil {
+		u.Locale = *patch.Locale
+	}
+
+	if patch.Timezone != nil {
+		u.Timezone = patch.Timezone
+	}
+}
+
 // ToJson convert a User to a json string
 func (u *User) ToJson() string {
-	b, err := json.Marshal(u)
-	if err != nil {
-		return ""
-	} else {
-		return string(b)
-	}
+	b, _ := json.Marshal(u)
+	return string(b)
+}
+
+func (u *UserPatch) ToJson() string {
+	b, _ := json.Marshal(u)
+	return string(b)
+}
+
+func (u *UserAuth) ToJson() string {
+	b, _ := json.Marshal(u)
+	return string(b)
 }
 
 // Generate a valid strong etag so the browser can cache the results
@@ -242,19 +335,10 @@ func (u *User) Etag(showFullName, showEmail bool) string {
 	return Etag(u.Id, u.UpdateAt, showFullName, showEmail)
 }
 
-func (u *User) IsOffline() bool {
-	return (GetMillis()-u.LastPingAt) > USER_OFFLINE_TIMEOUT && (GetMillis()-u.LastActivityAt) > USER_OFFLINE_TIMEOUT
-}
-
-func (u *User) IsAway() bool {
-	return (GetMillis() - u.LastActivityAt) > USER_AWAY_TIMEOUT
-}
-
 // Remove any private data from the user object
 func (u *User) Sanitize(options map[string]bool) {
 	u.Password = ""
-	u.AuthData = new(string)
-	*u.AuthData = ""
+	u.AuthData = NewString("")
 	u.MfaSecret = ""
 
 	if len(options) != 0 && !options["email"] {
@@ -267,25 +351,26 @@ func (u *User) Sanitize(options map[string]bool) {
 	if len(options) != 0 && !options["passwordupdate"] {
 		u.LastPasswordUpdate = 0
 	}
+	if len(options) != 0 && !options["authservice"] {
+		u.AuthService = ""
+	}
 }
 
 func (u *User) ClearNonProfileFields() {
-	u.UpdateAt = 0
 	u.Password = ""
-	u.AuthData = new(string)
-	*u.AuthData = ""
-	u.AuthService = ""
-	u.MfaActive = false
+	u.AuthData = NewString("")
 	u.MfaSecret = ""
 	u.EmailVerified = false
-	u.LastPingAt = 0
 	u.AllowMarketing = false
-	u.Props = StringMap{}
 	u.NotifyProps = StringMap{}
-	u.ThemeProps = StringMap{}
 	u.LastPasswordUpdate = 0
-	u.LastPictureUpdate = 0
 	u.FailedAttempts = 0
+}
+
+func (u *User) SanitizeProfile(options map[string]bool) {
+	u.ClearNonProfileFields()
+
+	u.Sanitize(options)
 }
 
 func (u *User) MakeNonNil() {
@@ -296,12 +381,6 @@ func (u *User) MakeNonNil() {
 	if u.NotifyProps == nil {
 		u.NotifyProps = make(map[string]string)
 	}
-}
-
-func (u *User) AddProp(key string, value string) {
-	u.MakeNonNil()
-
-	u.Props[key] = value
 }
 
 func (u *User) AddNotifyProp(key string, value string) {
@@ -322,39 +401,48 @@ func (u *User) GetFullName() string {
 	}
 }
 
-func (u *User) GetDisplayName() string {
-	if u.Nickname != "" {
-		return u.Nickname
-	} else if fullName := u.GetFullName(); fullName != "" {
-		return fullName
-	} else {
-		return u.Username
+func (u *User) GetDisplayName(nameFormat string) string {
+	displayName := u.Username
+
+	if nameFormat == SHOW_NICKNAME_FULLNAME {
+		if u.Nickname != "" {
+			displayName = u.Nickname
+		} else if fullName := u.GetFullName(); fullName != "" {
+			displayName = fullName
+		}
+	} else if nameFormat == SHOW_FULLNAME {
+		if fullName := u.GetFullName(); fullName != "" {
+			displayName = fullName
+		}
 	}
+
+	return displayName
+}
+
+func (u *User) GetRoles() []string {
+	return strings.Fields(u.Roles)
+}
+
+func (u *User) GetRawRoles() string {
+	return u.Roles
 }
 
 func IsValidUserRoles(userRoles string) bool {
 
-	roles := strings.Split(userRoles, " ")
+	roles := strings.Fields(userRoles)
 
 	for _, r := range roles {
-		if !isValidRole(r) {
+		if !IsValidRoleName(r) {
 			return false
 		}
 	}
 
+	// Exclude just the system_admin role explicitly to prevent mistakes
+	if len(roles) == 1 && roles[0] == "system_admin" {
+		return false
+	}
+
 	return true
-}
-
-func isValidRole(role string) bool {
-	if role == "" {
-		return true
-	}
-
-	if role == ROLE_SYSTEM_ADMIN {
-		return true
-	}
-
-	return false
 }
 
 // Make sure you acually want to use this function. In context.go there are functions to check permissions
@@ -372,67 +460,66 @@ func IsInRole(userRoles string, inRole string) bool {
 		if r == inRole {
 			return true
 		}
-
 	}
 
 	return false
+}
+
+func (u *User) IsSSOUser() bool {
+	return u.AuthService != "" && u.AuthService != USER_AUTH_SERVICE_EMAIL
 }
 
 func (u *User) IsOAuthUser() bool {
-	if u.AuthService == USER_AUTH_SERVICE_GITLAB {
-		return true
-	}
-	return false
+	return u.AuthService == USER_AUTH_SERVICE_GITLAB
 }
 
 func (u *User) IsLDAPUser() bool {
-	if u.AuthService == USER_AUTH_SERVICE_LDAP {
-		return true
-	}
-	return false
+	return u.AuthService == USER_AUTH_SERVICE_LDAP
 }
 
-func (u *User) PreExport() {
-	u.Password = ""
-	u.AuthData = new(string)
-	*u.AuthData = ""
-	u.LastActivityAt = 0
-	u.LastPingAt = 0
-	u.LastPasswordUpdate = 0
-	u.LastPictureUpdate = 0
-	u.FailedAttempts = 0
+func (u *User) IsSAMLUser() bool {
+	return u.AuthService == USER_AUTH_SERVICE_SAML
 }
 
 // UserFromJson will decode the input and return a User
 func UserFromJson(data io.Reader) *User {
-	decoder := json.NewDecoder(data)
-	var user User
-	err := decoder.Decode(&user)
-	if err == nil {
-		return &user
-	} else {
-		return nil
-	}
+	var user *User
+	json.NewDecoder(data).Decode(&user)
+	return user
+}
+
+func UserPatchFromJson(data io.Reader) *UserPatch {
+	var user *UserPatch
+	json.NewDecoder(data).Decode(&user)
+	return user
+}
+
+func UserAuthFromJson(data io.Reader) *UserAuth {
+	var user *UserAuth
+	json.NewDecoder(data).Decode(&user)
+	return user
 }
 
 func UserMapToJson(u map[string]*User) string {
-	b, err := json.Marshal(u)
-	if err != nil {
-		return ""
-	} else {
-		return string(b)
-	}
+	b, _ := json.Marshal(u)
+	return string(b)
 }
 
 func UserMapFromJson(data io.Reader) map[string]*User {
-	decoder := json.NewDecoder(data)
 	var users map[string]*User
-	err := decoder.Decode(&users)
-	if err == nil {
-		return users
-	} else {
-		return nil
-	}
+	json.NewDecoder(data).Decode(&users)
+	return users
+}
+
+func UserListToJson(u []*User) string {
+	b, _ := json.Marshal(u)
+	return string(b)
+}
+
+func UserListFromJson(data io.Reader) []*User {
+	var users []*User
+	json.NewDecoder(data).Decode(&users)
+	return users
 }
 
 // HashPassword generates a hash using the bcrypt.GenerateFromPassword
@@ -461,10 +548,11 @@ var validUsernameChars = regexp.MustCompile(`^[a-z0-9\.\-_]+$`)
 var restrictedUsernames = []string{
 	"all",
 	"channel",
+	"matterbot",
 }
 
 func IsValidUsername(s string) bool {
-	if len(s) == 0 || len(s) > 64 {
+	if len(s) < USER_NAME_MIN_LENGTH || len(s) > USER_NAME_MAX_LENGTH {
 		return false
 	}
 
@@ -482,7 +570,7 @@ func IsValidUsername(s string) bool {
 }
 
 func CleanUsername(s string) string {
-	s = strings.ToLower(strings.Replace(s, " ", "-", -1))
+	s = NormalizeUsername(strings.Replace(s, " ", "-", -1))
 
 	for _, value := range reservedName {
 		if s == value {
@@ -506,4 +594,22 @@ func CleanUsername(s string) string {
 	}
 
 	return s
+}
+
+func IsValidUserNotifyLevel(notifyLevel string) bool {
+	return notifyLevel == CHANNEL_NOTIFY_ALL ||
+		notifyLevel == CHANNEL_NOTIFY_MENTION ||
+		notifyLevel == CHANNEL_NOTIFY_NONE
+}
+
+func IsValidPushStatusNotifyLevel(notifyLevel string) bool {
+	return notifyLevel == STATUS_ONLINE ||
+		notifyLevel == STATUS_AWAY ||
+		notifyLevel == STATUS_OFFLINE
+}
+
+func IsValidCommentsNotifyLevel(notifyLevel string) bool {
+	return notifyLevel == COMMENTS_NOTIFY_ANY ||
+		notifyLevel == COMMENTS_NOTIFY_ROOT ||
+		notifyLevel == COMMENTS_NOTIFY_NEVER
 }

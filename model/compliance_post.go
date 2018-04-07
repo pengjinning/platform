@@ -1,9 +1,10 @@
-// Copyright (c) 2016 Mattermost, Inc. All Rights Reserved.
+// Copyright (c) 2016-present Mattermost, Inc. All Rights Reserved.
 // See License.txt for license information.
 
 package model
 
 import (
+	"regexp"
 	"time"
 )
 
@@ -16,6 +17,7 @@ type CompliancePost struct {
 	// From Channel
 	ChannelName        string
 	ChannelDisplayName string
+	ChannelType        string
 
 	// From User
 	UserUsername string
@@ -34,7 +36,7 @@ type CompliancePost struct {
 	PostType       string
 	PostProps      string
 	PostHashtags   string
-	PostFilenames  string
+	PostFileIds    string
 }
 
 func CompliancePostHeader() []string {
@@ -44,6 +46,7 @@ func CompliancePostHeader() []string {
 
 		"ChannelName",
 		"ChannelDisplayName",
+		"ChannelType",
 
 		"UserUsername",
 		"UserEmail",
@@ -60,7 +63,16 @@ func CompliancePostHeader() []string {
 		"PostType",
 		"PostProps",
 		"PostHashtags",
-		"PostFilenames",
+		"PostFileIds",
+	}
+}
+
+func cleanComplianceStrings(in string) string {
+	if matched, _ := regexp.MatchString("^\\s*(=|\\+|\\-)", in); matched {
+		return "'" + in
+
+	} else {
+		return in
 	}
 }
 
@@ -77,15 +89,16 @@ func (me *CompliancePost) Row() []string {
 	}
 
 	return []string{
-		me.TeamName,
-		me.TeamDisplayName,
+		cleanComplianceStrings(me.TeamName),
+		cleanComplianceStrings(me.TeamDisplayName),
 
-		me.ChannelName,
-		me.ChannelDisplayName,
+		cleanComplianceStrings(me.ChannelName),
+		cleanComplianceStrings(me.ChannelDisplayName),
+		cleanComplianceStrings(me.ChannelType),
 
-		me.UserUsername,
-		me.UserEmail,
-		me.UserNickname,
+		cleanComplianceStrings(me.UserUsername),
+		cleanComplianceStrings(me.UserEmail),
+		cleanComplianceStrings(me.UserNickname),
 
 		me.PostId,
 		time.Unix(0, me.PostCreateAt*int64(1000*1000)).Format(time.RFC3339),
@@ -95,10 +108,10 @@ func (me *CompliancePost) Row() []string {
 		me.PostRootId,
 		me.PostParentId,
 		me.PostOriginalId,
-		me.PostMessage,
+		cleanComplianceStrings(me.PostMessage),
 		me.PostType,
 		me.PostProps,
 		me.PostHashtags,
-		me.PostFilenames,
+		me.PostFileIds,
 	}
 }

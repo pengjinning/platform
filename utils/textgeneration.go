@@ -1,4 +1,4 @@
-// Copyright (c) 2015 Mattermost, Inc. All Rights Reserved.
+// Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See License.txt for license information.
 
 package utils
@@ -31,7 +31,7 @@ emoji that should not render in code block: :ice_cream:
 ` + "```" + `
 ` + "`monospace`" + `
 [Link to Mattermost](www.mattermost.com)
-Inline Image with link, alt text, and hover text: ![Build Status](https://travis-ci.org/mattermost/platform.svg?branch=master)](https://travis-ci.org/mattermost/platform)
+Inline Image with link, alt text, and hover text: ![Build Status](https://travis-ci.org/mattermost/mattermost-server.svg?branch=master)](https://travis-ci.org/mattermost/mattermost-server)
 
 Three types of lines:
 ***

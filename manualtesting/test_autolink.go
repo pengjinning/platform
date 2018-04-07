@@ -1,12 +1,14 @@
-// Copyright (c) 2015 Mattermost, Inc. All Rights Reserved.
+// Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See License.txt for license information.
 
 package manualtesting
 
 import (
+	"net/http"
+
 	l4g "github.com/alecthomas/log4go"
-	"github.com/mattermost/platform/model"
-	"github.com/mattermost/platform/utils"
+	"github.com/mattermost/mattermost-server/model"
+	"github.com/mattermost/mattermost-server/utils"
 )
 
 const LINK_POST_TEXT = `
@@ -22,18 +24,14 @@ https://medium.com/@slackhq/11-useful-tips-for-getting-the-most-of-slack-5dfb3d1
 
 func testAutoLink(env TestEnvironment) *model.AppError {
 	l4g.Info(utils.T("manaultesting.test_autolink.info"))
-	channelID, err := getChannelID(model.DEFAULT_CHANNEL, env.CreatedTeamId, env.CreatedUserId)
-	if err != true {
-		return model.NewLocAppError("/manualtest", "manaultesting.test_autolink.unable.app_error", nil, "")
+	channelID, err := getChannelID(env.Context.App, model.DEFAULT_CHANNEL, env.CreatedTeamId, env.CreatedUserId)
+	if !err {
+		return model.NewAppError("/manualtest", "manaultesting.test_autolink.unable.app_error", nil, "", http.StatusInternalServerError)
 	}
 
 	post := &model.Post{
 		ChannelId: channelID,
 		Message:   LINK_POST_TEXT}
 	_, err2 := env.Client.CreatePost(post)
-	if err2 != nil {
-		return err2
-	}
-
-	return nil
+	return err2
 }

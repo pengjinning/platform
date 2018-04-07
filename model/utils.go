@@ -1,4 +1,4 @@
-// Copyright (c) 2015 Mattermost, Inc. All Rights Reserved.
+// Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See License.txt for license information.
 
 package model
@@ -10,11 +10,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/ioutil"
+	"net"
+	"net/http"
 	"net/mail"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	goi18n "github.com/nicksnyder/go-i18n/i18n"
 	"github.com/pborman/uuid"
@@ -30,17 +35,22 @@ const (
 type StringInterface map[string]interface{}
 type StringMap map[string]string
 type StringArray []string
-type EncryptStringMap map[string]string
+
+var translateFunc goi18n.TranslateFunc = nil
+
+func AppErrorInit(t goi18n.TranslateFunc) {
+	translateFunc = t
+}
 
 type AppError struct {
-	Id            string                 `json:"id"`
-	Message       string                 `json:"message"`        // Message to be display to the end user without debugging information
-	DetailedError string                 `json:"detailed_error"` // Internal error string to help the developer
-	RequestId     string                 `json:"request_id"`     // The RequestId that's also set in the header
-	StatusCode    int                    `json:"status_code"`    // The http status code
-	Where         string                 `json:"-"`              // The function where it happened in the form of Struct.Func
-	IsOAuth       bool                   `json:"is_oauth"`       // Whether the error is OAuth specific
-	params        map[string]interface{} `json:"-"`
+	Id            string `json:"id"`
+	Message       string `json:"message"`               // Message to be display to the end user without debugging information
+	DetailedError string `json:"detailed_error"`        // Internal error string to help the developer
+	RequestId     string `json:"request_id,omitempty"`  // The RequestId that's also set in the header
+	StatusCode    int    `json:"status_code,omitempty"` // The http status code
+	Where         string `json:"-"`                     // The function where it happened in the form of Struct.Func
+	IsOAuth       bool   `json:"is_oauth,omitempty"`    // Whether the error is OAuth specific
+	params        map[string]interface{}
 }
 
 func (er *AppError) Error() string {
@@ -48,6 +58,11 @@ func (er *AppError) Error() string {
 }
 
 func (er *AppError) Translate(T goi18n.TranslateFunc) {
+	if T == nil {
+		er.Message = er.Id
+		return
+	}
+
 	if er.params == nil {
 		er.Message = T(er.Id)
 	} else {
@@ -64,35 +79,40 @@ func (er *AppError) SystemMessage(T goi18n.TranslateFunc) string {
 }
 
 func (er *AppError) ToJson() string {
-	b, err := json.Marshal(er)
-	if err != nil {
-		return ""
-	} else {
-		return string(b)
-	}
+	b, _ := json.Marshal(er)
+	return string(b)
 }
 
 // AppErrorFromJson will decode the input and return an AppError
 func AppErrorFromJson(data io.Reader) *AppError {
-	decoder := json.NewDecoder(data)
+	str := ""
+	bytes, rerr := ioutil.ReadAll(data)
+	if rerr != nil {
+		str = rerr.Error()
+	} else {
+		str = string(bytes)
+	}
+
+	decoder := json.NewDecoder(strings.NewReader(str))
 	var er AppError
 	err := decoder.Decode(&er)
 	if err == nil {
 		return &er
 	} else {
-		return NewLocAppError("AppErrorFromJson", "model.utils.decode_json.app_error", nil, err.Error())
+		return NewAppError("AppErrorFromJson", "model.utils.decode_json.app_error", nil, "body: "+str, http.StatusInternalServerError)
 	}
 }
 
-func NewLocAppError(where string, id string, params map[string]interface{}, details string) *AppError {
+func NewAppError(where string, id string, params map[string]interface{}, details string, status int) *AppError {
 	ap := &AppError{}
 	ap.Id = id
 	ap.params = params
 	ap.Message = id
 	ap.Where = where
 	ap.DetailedError = details
-	ap.StatusCode = 500
+	ap.StatusCode = status
 	ap.IsOAuth = false
+	ap.Translate(translateFunc)
 	return ap
 }
 
@@ -128,11 +148,14 @@ func GetMillis() int64 {
 
 // MapToJson converts a map to a json string
 func MapToJson(objmap map[string]string) string {
-	if b, err := json.Marshal(objmap); err != nil {
-		return ""
-	} else {
-		return string(b)
-	}
+	b, _ := json.Marshal(objmap)
+	return string(b)
+}
+
+// MapToJson converts a map to a json string
+func MapBoolToJson(objmap map[string]bool) string {
+	b, _ := json.Marshal(objmap)
+	return string(b)
 }
 
 // MapFromJson will decode the key/value pair map
@@ -147,12 +170,21 @@ func MapFromJson(data io.Reader) map[string]string {
 	}
 }
 
-func ArrayToJson(objmap []string) string {
-	if b, err := json.Marshal(objmap); err != nil {
-		return ""
+// MapFromJson will decode the key/value pair map
+func MapBoolFromJson(data io.Reader) map[string]bool {
+	decoder := json.NewDecoder(data)
+
+	var objmap map[string]bool
+	if err := decoder.Decode(&objmap); err != nil {
+		return make(map[string]bool)
 	} else {
-		return string(b)
+		return objmap
 	}
+}
+
+func ArrayToJson(objmap []string) string {
+	b, _ := json.Marshal(objmap)
+	return string(b)
 }
 
 func ArrayFromJson(data io.Reader) []string {
@@ -166,12 +198,26 @@ func ArrayFromJson(data io.Reader) []string {
 	}
 }
 
-func StringInterfaceToJson(objmap map[string]interface{}) string {
-	if b, err := json.Marshal(objmap); err != nil {
-		return ""
-	} else {
-		return string(b)
+func ArrayFromInterface(data interface{}) []string {
+	stringArray := []string{}
+
+	dataArray, ok := data.([]interface{})
+	if !ok {
+		return stringArray
 	}
+
+	for _, v := range dataArray {
+		if str, ok := v.(string); ok {
+			stringArray = append(stringArray, str)
+		}
+	}
+
+	return stringArray
+}
+
+func StringInterfaceToJson(objmap map[string]interface{}) string {
+	b, _ := json.Marshal(objmap)
+	return string(b)
 }
 
 func StringInterfaceFromJson(data io.Reader) map[string]interface{} {
@@ -186,12 +232,8 @@ func StringInterfaceFromJson(data io.Reader) map[string]interface{} {
 }
 
 func StringToJson(s string) string {
-	b, err := json.Marshal(s)
-	if err != nil {
-		return ""
-	} else {
-		return string(b)
-	}
+	b, _ := json.Marshal(s)
+	return string(b)
 }
 
 func StringFromJson(data io.Reader) string {
@@ -205,12 +247,25 @@ func StringFromJson(data io.Reader) string {
 	}
 }
 
-func IsLower(s string) bool {
-	if strings.ToLower(s) == s {
-		return true
+func GetServerIpAddress() string {
+	if addrs, err := net.InterfaceAddrs(); err != nil {
+		return ""
+	} else {
+		for _, addr := range addrs {
+
+			if ip, ok := addr.(*net.IPNet); ok && !ip.IP.IsLoopback() {
+				if ip.IP.To4() != nil {
+					return ip.IP.String()
+				}
+			}
+		}
 	}
 
-	return false
+	return ""
+}
+
+func IsLower(s string) bool {
+	return strings.ToLower(s) == s
 }
 
 func IsValidEmail(email string) bool {
@@ -227,87 +282,42 @@ func IsValidEmail(email string) bool {
 }
 
 var reservedName = []string{
-	"www",
-	"web",
+	"signup",
+	"login",
 	"admin",
-	"support",
-	"notify",
-	"test",
-	"demo",
-	"mail",
-	"team",
 	"channel",
-	"internal",
-	"localhost",
-	"dockerhost",
-	"stag",
 	"post",
-	"cluster",
 	"api",
 	"oauth",
 }
 
-var wwwStart = regexp.MustCompile(`^www`)
-var betaStart = regexp.MustCompile(`^beta`)
-var ciStart = regexp.MustCompile(`^ci`)
-
-func GetSubDomain(s string) (string, string) {
-	s = strings.Replace(s, "http://", "", 1)
-	s = strings.Replace(s, "https://", "", 1)
-
-	match := wwwStart.MatchString(s)
-	if match {
-		return "", ""
-	}
-
-	match = betaStart.MatchString(s)
-	if match {
-		return "", ""
-	}
-
-	match = ciStart.MatchString(s)
-	if match {
-		return "", ""
-	}
-
-	parts := strings.Split(s, ".")
-
-	if len(parts) != 3 {
-		return "", ""
-	}
-
-	return parts[0], parts[1]
-}
-
 func IsValidChannelIdentifier(s string) bool {
 
-	if !IsValidAlphaNum(s, true) {
+	if !IsValidAlphaNumHyphenUnderscore(s, true) {
 		return false
 	}
 
-	if len(s) < 2 {
+	if len(s) < CHANNEL_NAME_MIN_LENGTH {
 		return false
 	}
 
 	return true
 }
 
-var validAlphaNumUnderscore = regexp.MustCompile(`^[a-z0-9]+([a-z\-\_0-9]+|(__)?)[a-z0-9]+$`)
-var validAlphaNum = regexp.MustCompile(`^[a-z0-9]+([a-z\-0-9]+|(__)?)[a-z0-9]+$`)
+func IsValidAlphaNum(s string) bool {
+	validAlphaNum := regexp.MustCompile(`^[a-z0-9]+([a-z\-0-9]+|(__)?)[a-z0-9]+$`)
 
-func IsValidAlphaNum(s string, allowUnderscores bool) bool {
-	var match bool
-	if allowUnderscores {
-		match = validAlphaNumUnderscore.MatchString(s)
-	} else {
-		match = validAlphaNum.MatchString(s)
+	return validAlphaNum.MatchString(s)
+}
+
+func IsValidAlphaNumHyphenUnderscore(s string, withFormat bool) bool {
+	if withFormat {
+		validAlphaNumHyphenUnderscore := regexp.MustCompile(`^[a-z0-9]+([a-z\-\_0-9]+|(__)?)[a-z0-9]+$`)
+		return validAlphaNumHyphenUnderscore.MatchString(s)
 	}
 
-	if !match {
-		return false
-	}
-
-	return true
+	validSimpleAlphaNumHyphenUnderscore := regexp.MustCompile(`^[a-zA-Z0-9\-_]+$`)
+	return validSimpleAlphaNumHyphenUnderscore.MatchString(s)
 }
 
 func Etag(parts ...interface{}) string {
@@ -321,7 +331,7 @@ func Etag(parts ...interface{}) string {
 	return etag
 }
 
-var validHashtag = regexp.MustCompile(`^(#[A-Za-zäöüÄÖÜß]+[A-Za-z0-9äöüÄÖÜß_\-]*[A-Za-z0-9äöüÄÖÜß])$`)
+var validHashtag = regexp.MustCompile(`^(#\pL[\pL\d\-_.]*[\pL\d])$`)
 var puncStart = regexp.MustCompile(`^[^\pL\d\s#]+`)
 var hashtagStart = regexp.MustCompile(`^#{2,}`)
 var puncEnd = regexp.MustCompile(`[^\pL\d\s]+$`)
@@ -384,11 +394,6 @@ func ClearMentionTags(post string) string {
 	return post
 }
 
-var UrlRegex = regexp.MustCompile(`^((?:[a-z]+:\/\/)?(?:(?:[a-z0-9\-]+\.)+(?:[a-z]{2}|aero|arpa|biz|com|coop|edu|gov|info|int|jobs|mil|museum|name|nato|net|org|pro|travel|local|internal))(:[0-9]{1,5})?(?:\/[a-z0-9_\-\.~]+)*(\/([a-z0-9_\-\.]*)(?:\?[a-z0-9+_~\-\.%=&amp;]*)?)?(?:#[a-zA-Z0-9!$&'()*+.=-_~:@/?]*)?)(?:\s+|$)$`)
-var PartialUrlRegex = regexp.MustCompile(`/([A-Za-z0-9]{26})/([A-Za-z0-9]{26})/((?:[A-Za-z0-9]{26})?.+(?:\.[A-Za-z0-9]{3,})?)`)
-
-var SplitRunes = map[rune]bool{',': true, ' ': true, '.': true, '!': true, '?': true, ':': true, ';': true, '\n': true, '<': true, '>': true, '(': true, ')': true, '{': true, '}': true, '[': true, ']': true, '+': true, '/': true, '\\': true}
-
 func IsValidHttpUrl(rawUrl string) bool {
 	if strings.Index(rawUrl, "http://") != 0 && strings.Index(rawUrl, "https://") != 0 {
 		return false
@@ -401,12 +406,12 @@ func IsValidHttpUrl(rawUrl string) bool {
 	return true
 }
 
-func IsValidHttpsUrl(rawUrl string) bool {
-	if strings.Index(rawUrl, "https://") != 0 {
+func IsValidTurnOrStunServer(rawUri string) bool {
+	if strings.Index(rawUri, "turn:") != 0 && strings.Index(rawUri, "stun:") != 0 {
 		return false
 	}
 
-	if _, err := url.ParseRequestURI(rawUrl); err != nil {
+	if _, err := url.ParseRequestURI(rawUri); err != nil {
 		return false
 	}
 
@@ -420,6 +425,44 @@ func IsSafeLink(link *string) bool {
 		} else if strings.HasPrefix(*link, "/") {
 			return true
 		} else {
+			return false
+		}
+	}
+
+	return true
+}
+
+func IsValidWebsocketUrl(rawUrl string) bool {
+	if strings.Index(rawUrl, "ws://") != 0 && strings.Index(rawUrl, "wss://") != 0 {
+		return false
+	}
+
+	if _, err := url.ParseRequestURI(rawUrl); err != nil {
+		return false
+	}
+
+	return true
+}
+
+func IsValidTrueOrFalseString(value string) bool {
+	return value == "true" || value == "false"
+}
+
+func IsValidNumberString(value string) bool {
+	if _, err := strconv.Atoi(value); err != nil {
+		return false
+	}
+
+	return true
+}
+
+func IsValidId(value string) bool {
+	if len(value) != 26 {
+		return false
+	}
+
+	for _, r := range value {
+		if !unicode.IsLetter(r) && !unicode.IsNumber(r) {
 			return false
 		}
 	}

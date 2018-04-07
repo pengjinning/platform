@@ -1,44 +1,77 @@
-// Copyright (c) 2015 Mattermost, Inc. All Rights Reserved.
+// Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See License.txt for license information.
 
 package web
 
 import (
-	"net/url"
-	"strings"
+	"fmt"
+	"os"
 	"testing"
-	"time"
 
-	"github.com/mattermost/platform/api"
-	"github.com/mattermost/platform/model"
-	"github.com/mattermost/platform/store"
-	"github.com/mattermost/platform/utils"
+	"github.com/mattermost/mattermost-server/api"
+	"github.com/mattermost/mattermost-server/api4"
+	"github.com/mattermost/mattermost-server/app"
+	"github.com/mattermost/mattermost-server/model"
+	"github.com/mattermost/mattermost-server/store"
+	"github.com/mattermost/mattermost-server/store/sqlstore"
+	"github.com/mattermost/mattermost-server/store/storetest"
+	"github.com/mattermost/mattermost-server/utils"
 )
 
 var ApiClient *model.Client
 var URL string
 
-func Setup() {
-	if api.Srv == nil {
-		utils.TranslationsPreInit()
-		utils.LoadConfig("config.json")
-		utils.InitTranslations(utils.Cfg.LocalizationSettings)
-		api.NewServer()
-		api.StartServer()
-		api.InitApi()
-		InitWeb()
-		URL = "http://localhost" + utils.Cfg.ServiceSettings.ListenAddress
-		ApiClient = model.NewClient(URL)
+type persistentTestStore struct {
+	store.Store
+}
 
-		api.Srv.Store.MarkSystemRanUnitTests()
+func (*persistentTestStore) Close() {}
 
-		*utils.Cfg.TeamSettings.EnableOpenServer = true
+var testStoreContainer *storetest.RunningContainer
+var testStore *persistentTestStore
+
+func StopTestStore() {
+	if testStoreContainer != nil {
+		testStoreContainer.Stop()
+		testStoreContainer = nil
 	}
 }
 
-func TearDown() {
-	if api.Srv != nil {
-		api.StopServer()
+func Setup() *app.App {
+	a, err := app.New(app.StoreOverride(testStore), app.DisableConfigWatch)
+	if err != nil {
+		panic(err)
+	}
+	prevListenAddress := *a.Config().ServiceSettings.ListenAddress
+	a.UpdateConfig(func(cfg *model.Config) { *cfg.ServiceSettings.ListenAddress = ":0" })
+	serverErr := a.StartServer()
+	if serverErr != nil {
+		panic(serverErr)
+	}
+	a.UpdateConfig(func(cfg *model.Config) { *cfg.ServiceSettings.ListenAddress = prevListenAddress })
+	api4.Init(a, a.Srv.Router, false)
+	api3 := api.Init(a, a.Srv.Router)
+	Init(api3)
+	URL = fmt.Sprintf("http://localhost:%v", a.Srv.ListenAddr.Port)
+	ApiClient = model.NewClient(URL)
+
+	a.DoAdvancedPermissionsMigration()
+
+	a.Srv.Store.MarkSystemRanUnitTests()
+
+	a.UpdateConfig(func(cfg *model.Config) {
+		*cfg.TeamSettings.EnableOpenServer = true
+		*cfg.ServiceSettings.EnableAPIv3 = true
+	})
+
+	return a
+}
+
+func TearDown(a *app.App) {
+	a.Shutdown()
+	if err := recover(); err != nil {
+		StopTestStore()
+		panic(err)
 	}
 }
 
@@ -59,159 +92,28 @@ func TestStatic(t *testing.T) {
 }
 */
 
-func TestGetAccessToken(t *testing.T) {
-	Setup()
-
-	team := model.Team{DisplayName: "Name", Name: "z-z-" + model.NewId() + "a", Email: "test@nowhere.com", Type: model.TEAM_OPEN}
-	rteam, _ := ApiClient.CreateTeam(&team)
-
-	user := model.User{Email: strings.ToLower(model.NewId()) + "success+test@simulator.amazonses.com", Password: "passwd1"}
-	ruser := ApiClient.Must(ApiClient.CreateUser(&user, "")).Data.(*model.User)
-	api.JoinUserToTeam(rteam.Data.(*model.Team), ruser)
-	store.Must(api.Srv.Store.User().VerifyEmail(ruser.Id))
-
-	app := &model.OAuthApp{Name: "TestApp" + model.NewId(), Homepage: "https://nowhere.com", Description: "test", CallbackUrls: []string{"https://nowhere.com"}}
-
-	if !utils.Cfg.ServiceSettings.EnableOAuthServiceProvider {
-		data := url.Values{"grant_type": []string{"junk"}, "client_id": []string{"12345678901234567890123456"}, "client_secret": []string{"12345678901234567890123456"}, "code": []string{"junk"}, "redirect_uri": []string{app.CallbackUrls[0]}}
-
-		if _, err := ApiClient.GetAccessToken(data); err == nil {
-			t.Fatal("should have failed - oauth providing turned off")
-		}
-	} else {
-
-		ApiClient.Must(ApiClient.LoginById(ruser.Id, "passwd1"))
-		ApiClient.SetTeamId(rteam.Data.(*model.Team).Id)
-		app = ApiClient.Must(ApiClient.RegisterApp(app)).Data.(*model.OAuthApp)
-
-		redirect := ApiClient.Must(ApiClient.AllowOAuth(model.AUTHCODE_RESPONSE_TYPE, app.Id, app.CallbackUrls[0], "all", "123")).Data.(map[string]string)["redirect"]
-		rurl, _ := url.Parse(redirect)
-
-		ApiClient.Logout()
-
-		data := url.Values{"grant_type": []string{"junk"}, "client_id": []string{app.Id}, "client_secret": []string{app.ClientSecret}, "code": []string{rurl.Query().Get("code")}, "redirect_uri": []string{app.CallbackUrls[0]}}
-
-		if _, err := ApiClient.GetAccessToken(data); err == nil {
-			t.Fatal("should have failed - bad grant type")
-		}
-
-		data.Set("grant_type", model.ACCESS_TOKEN_GRANT_TYPE)
-		data.Set("client_id", "")
-		if _, err := ApiClient.GetAccessToken(data); err == nil {
-			t.Fatal("should have failed - missing client id")
-		}
-		data.Set("client_id", "junk")
-		if _, err := ApiClient.GetAccessToken(data); err == nil {
-			t.Fatal("should have failed - bad client id")
-		}
-
-		data.Set("client_id", app.Id)
-		data.Set("client_secret", "")
-		if _, err := ApiClient.GetAccessToken(data); err == nil {
-			t.Fatal("should have failed - missing client secret")
-		}
-
-		data.Set("client_secret", "junk")
-		if _, err := ApiClient.GetAccessToken(data); err == nil {
-			t.Fatal("should have failed - bad client secret")
-		}
-
-		data.Set("client_secret", app.ClientSecret)
-		data.Set("code", "")
-		if _, err := ApiClient.GetAccessToken(data); err == nil {
-			t.Fatal("should have failed - missing code")
-		}
-
-		data.Set("code", "junk")
-		if _, err := ApiClient.GetAccessToken(data); err == nil {
-			t.Fatal("should have failed - bad code")
-		}
-
-		data.Set("code", rurl.Query().Get("code"))
-		data.Set("redirect_uri", "junk")
-		if _, err := ApiClient.GetAccessToken(data); err == nil {
-			t.Fatal("should have failed - non-matching redirect uri")
-		}
-
-		// reset data for successful request
-		data.Set("grant_type", model.ACCESS_TOKEN_GRANT_TYPE)
-		data.Set("client_id", app.Id)
-		data.Set("client_secret", app.ClientSecret)
-		data.Set("code", rurl.Query().Get("code"))
-		data.Set("redirect_uri", app.CallbackUrls[0])
-
-		token := ""
-		if result, err := ApiClient.GetAccessToken(data); err != nil {
-			t.Fatal(err)
-		} else {
-			rsp := result.Data.(*model.AccessResponse)
-			if len(rsp.AccessToken) == 0 {
-				t.Fatal("access token not returned")
-			} else {
-				token = rsp.AccessToken
-			}
-			if rsp.TokenType != model.ACCESS_TOKEN_TYPE {
-				t.Fatal("access token type incorrect")
-			}
-		}
-
-		if result, err := ApiClient.DoApiGet("/users/profiles?access_token="+token, "", ""); err != nil {
-			t.Fatal(err)
-		} else {
-			userMap := model.UserMapFromJson(result.Body)
-			if len(userMap) == 0 {
-				t.Fatal("user map empty - did not get results correctly")
-			}
-		}
-
-		if _, err := ApiClient.DoApiGet("/users/profiles", "", ""); err == nil {
-			t.Fatal("should have failed - no access token provided")
-		}
-
-		if _, err := ApiClient.DoApiGet("/users/profiles?access_token=junk", "", ""); err == nil {
-			t.Fatal("should have failed - bad access token provided")
-		}
-
-		ApiClient.SetOAuthToken(token)
-		if result, err := ApiClient.DoApiGet("/users/profiles", "", ""); err != nil {
-			t.Fatal(err)
-		} else {
-			userMap := model.UserMapFromJson(result.Body)
-			if len(userMap) == 0 {
-				t.Fatal("user map empty - did not get results correctly")
-			}
-		}
-
-		if _, err := ApiClient.GetAccessToken(data); err == nil {
-			t.Fatal("should have failed - tried to reuse auth code")
-		}
-
-		ApiClient.ClearOAuthToken()
-	}
-}
-
 func TestIncomingWebhook(t *testing.T) {
-	Setup()
+	a := Setup()
+	defer TearDown(a)
+
+	user := &model.User{Email: model.NewId() + "success+test@simulator.amazonses.com", Nickname: "Corey Hulen", Password: "passwd1"}
+	user = ApiClient.Must(ApiClient.CreateUser(user, "")).Data.(*model.User)
+	store.Must(a.Srv.Store.User().VerifyEmail(user.Id))
+
+	ApiClient.Login(user.Email, "passwd1")
 
 	team := &model.Team{DisplayName: "Name", Name: "z-z-" + model.NewId() + "a", Email: "test@nowhere.com", Type: model.TEAM_OPEN}
 	team = ApiClient.Must(ApiClient.CreateTeam(team)).Data.(*model.Team)
 
-	user := &model.User{Email: model.NewId() + "success+test@simulator.amazonses.com", Nickname: "Corey Hulen", Password: "passwd1"}
-	user = ApiClient.Must(ApiClient.CreateUser(user, "")).Data.(*model.User)
-	store.Must(api.Srv.Store.User().VerifyEmail(user.Id))
-	api.JoinUserToTeam(team, user)
+	a.JoinUserToTeam(team, user, "")
 
-	c := &api.Context{}
-	c.RequestId = model.NewId()
-	c.IpAddress = "cmd_line"
-	api.UpdateUserRoles(c, user, model.ROLE_SYSTEM_ADMIN)
-	ApiClient.Login(user.Email, "passwd1")
+	a.UpdateUserRoles(user.Id, model.SYSTEM_ADMIN_ROLE_ID, false)
 	ApiClient.SetTeamId(team.Id)
 
-	channel1 := &model.Channel{DisplayName: "Test API Name", Name: "a" + model.NewId() + "a", Type: model.CHANNEL_OPEN, TeamId: team.Id}
+	channel1 := &model.Channel{DisplayName: "Test API Name", Name: "zz" + model.NewId() + "a", Type: model.CHANNEL_OPEN, TeamId: team.Id}
 	channel1 = ApiClient.Must(ApiClient.CreateChannel(channel1)).Data.(*model.Channel)
 
-	if utils.Cfg.ServiceSettings.EnableIncomingWebhooks {
+	if a.Config().ServiceSettings.EnableIncomingWebhooks {
 		hook1 := &model.IncomingWebhook{ChannelId: channel1.Id}
 		hook1 = ApiClient.Must(ApiClient.CreateIncomingWebhook(hook1)).Data.(*model.IncomingWebhook)
 
@@ -234,6 +136,12 @@ func TestIncomingWebhook(t *testing.T) {
 		if _, err := ApiClient.PostToWebhook("abc123", payload); err == nil {
 			t.Fatal("should have errored - bad hook")
 		}
+
+		payloadMultiPart := "------WebKitFormBoundary7MA4YWxkTrZu0gW\r\nContent-Disposition: form-data; name=\"username\"\r\n\r\nwebhook-bot\r\n------WebKitFormBoundary7MA4YWxkTrZu0gW\r\nContent-Disposition: form-data; name=\"text\"\r\n\r\nthis is a test :tada:\r\n------WebKitFormBoundary7MA4YWxkTrZu0gW--"
+		if _, err := ApiClient.DoPost("/hooks/"+hook1.Id, payloadMultiPart, "multipart/form-data; boundary=----WebKitFormBoundary7MA4YWxkTrZu0gW"); err != nil {
+			t.Fatal("should have errored - bad hook")
+		}
+
 	} else {
 		if _, err := ApiClient.PostToWebhook("123", "123"); err == nil {
 			t.Fatal("should have failed - webhooks turned off")
@@ -241,11 +149,54 @@ func TestIncomingWebhook(t *testing.T) {
 	}
 }
 
-func TestZZWebTearDown(t *testing.T) {
-	// *IMPORTANT*
-	// This should be the last function in any test file
-	// that calls Setup()
-	// Should be in the last file too sorted by name
-	time.Sleep(2 * time.Second)
-	TearDown()
+func TestMain(m *testing.M) {
+	utils.TranslationsPreInit()
+
+	status := 0
+
+	container, settings, err := storetest.NewPostgreSQLContainer()
+	if err != nil {
+		panic(err)
+	}
+
+	testStoreContainer = container
+	testStore = &persistentTestStore{store.NewLayeredStore(sqlstore.NewSqlSupplier(*settings, nil), nil, nil)}
+
+	defer func() {
+		StopTestStore()
+		os.Exit(status)
+	}()
+
+	status = m.Run()
+
+}
+
+func TestCheckClientCompatability(t *testing.T) {
+	//Browser Name, UA String, expected result (if the browser should fail the test false and if it should pass the true)
+	type uaTest struct {
+		Name      string // Name of Browser
+		UserAgent string // Useragent of Browser
+		Result    bool   // Expected result (true if browser should be compatible, false if browser shouldn't be compatible)
+	}
+	var uaTestParameters = []uaTest{
+		{"Mozilla 40.1", "Mozilla/5.0 (Windows NT 6.1; WOW64; rv:40.0) Gecko/20100101 Firefox/40.1", true},
+		{"Chrome 60", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/60.0.3112.90 Safari/537.36", true},
+		{"Chrome Mobile", "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/60.0.3112.113 Mobile Safari/537.36", true},
+		{"MM Classic App", "Mozilla/5.0 (Linux; Android 8.0.0; Nexus 5X Build/OPR6.170623.013; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/61.0.3163.81 Mobile Safari/537.36 Web-Atoms-Mobile-WebView", true},
+		{"MM App 3.7.1", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_6) AppleWebKit/537.36 (KHTML, like Gecko) Mattermost/3.7.1 Chrome/56.0.2924.87 Electron/1.6.11 Safari/537.36", true},
+		{"Franz 4.0.4", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_6) AppleWebKit/537.36 (KHTML, like Gecko) Franz/4.0.4 Chrome/52.0.2743.82 Electron/1.3.1 Safari/537.36", true},
+		{"Edge 14", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/51.0.2704.79 Safari/537.36 Edge/14.14393", true},
+		{"Internet Explorer 11", "Mozilla/5.0 (Windows NT 10.0; WOW64; Trident/7.0; rv:11.0) like Gecko", true},
+		{"Internet Explorer 9", "Mozilla/5.0 (compatible; MSIE 9.0; Windows NT 7.1; Trident/5.0", false},
+		{"Safari 9", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_6) AppleWebKit/604.1.38 (KHTML, like Gecko) Version/11.0 Safari/604.1.38", true},
+		{"Safari 8", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_4) AppleWebKit/600.7.12 (KHTML, like Gecko) Version/8.0.7 Safari/600.7.12", false},
+		{"Safari Mobile", "Mozilla/5.0 (iPhone; CPU iPhone OS 9_1 like Mac OS X) AppleWebKit/601.1.46 (KHTML, like Gecko) Version/9.0 Mobile/13B137 Safari/601.1", true},
+	}
+	for _, browser := range uaTestParameters {
+		t.Run(browser.Name, func(t *testing.T) {
+			if result := CheckClientCompatability(browser.UserAgent); result != browser.Result {
+				t.Fatalf("%s User Agent Test failed!", browser.Name)
+			}
+		})
+	}
 }

@@ -1,4 +1,4 @@
-// Copyright (c) 2015 Mattermost, Inc. All Rights Reserved.
+// Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See License.txt for license information.
 
 package model
@@ -7,8 +7,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"net/http"
 	"regexp"
-	"strings"
 )
 
 const (
@@ -25,90 +25,83 @@ type IncomingWebhook struct {
 	TeamId      string `json:"team_id"`
 	DisplayName string `json:"display_name"`
 	Description string `json:"description"`
+	Username    string `json:"username"`
+	IconURL     string `json:"icon_url"`
 }
 
 type IncomingWebhookRequest struct {
-	Text        string          `json:"text"`
-	Username    string          `json:"username"`
-	IconURL     string          `json:"icon_url"`
-	ChannelName string          `json:"channel"`
-	Props       StringInterface `json:"props"`
-	Attachments interface{}     `json:"attachments"`
-	Type        string          `json:"type"`
+	Text        string             `json:"text"`
+	Username    string             `json:"username"`
+	IconURL     string             `json:"icon_url"`
+	ChannelName string             `json:"channel"`
+	Props       StringInterface    `json:"props"`
+	Attachments []*SlackAttachment `json:"attachments"`
+	Type        string             `json:"type"`
 }
 
 func (o *IncomingWebhook) ToJson() string {
-	b, err := json.Marshal(o)
-	if err != nil {
-		return ""
-	} else {
-		return string(b)
-	}
+	b, _ := json.Marshal(o)
+	return string(b)
 }
 
 func IncomingWebhookFromJson(data io.Reader) *IncomingWebhook {
-	decoder := json.NewDecoder(data)
-	var o IncomingWebhook
-	err := decoder.Decode(&o)
-	if err == nil {
-		return &o
-	} else {
-		return nil
-	}
+	var o *IncomingWebhook
+	json.NewDecoder(data).Decode(&o)
+	return o
 }
 
 func IncomingWebhookListToJson(l []*IncomingWebhook) string {
-	b, err := json.Marshal(l)
-	if err != nil {
-		return ""
-	} else {
-		return string(b)
-	}
+	b, _ := json.Marshal(l)
+	return string(b)
 }
 
 func IncomingWebhookListFromJson(data io.Reader) []*IncomingWebhook {
-	decoder := json.NewDecoder(data)
 	var o []*IncomingWebhook
-	err := decoder.Decode(&o)
-	if err == nil {
-		return o
-	} else {
-		return nil
-	}
+	json.NewDecoder(data).Decode(&o)
+	return o
 }
 
 func (o *IncomingWebhook) IsValid() *AppError {
 
 	if len(o.Id) != 26 {
-		return NewLocAppError("IncomingWebhook.IsValid", "model.incoming_hook.id.app_error", nil, "")
+		return NewAppError("IncomingWebhook.IsValid", "model.incoming_hook.id.app_error", nil, "", http.StatusBadRequest)
+
 	}
 
 	if o.CreateAt == 0 {
-		return NewLocAppError("IncomingWebhook.IsValid", "model.incoming_hook.create_at.app_error", nil, "id="+o.Id)
+		return NewAppError("IncomingWebhook.IsValid", "model.incoming_hook.create_at.app_error", nil, "id="+o.Id, http.StatusBadRequest)
 	}
 
 	if o.UpdateAt == 0 {
-		return NewLocAppError("IncomingWebhook.IsValid", "model.incoming_hook.update_at.app_error", nil, "id="+o.Id)
+		return NewAppError("IncomingWebhook.IsValid", "model.incoming_hook.update_at.app_error", nil, "id="+o.Id, http.StatusBadRequest)
 	}
 
 	if len(o.UserId) != 26 {
-		return NewLocAppError("IncomingWebhook.IsValid", "model.incoming_hook.user_id.app_error", nil, "")
+		return NewAppError("IncomingWebhook.IsValid", "model.incoming_hook.user_id.app_error", nil, "", http.StatusBadRequest)
 	}
 
 	if len(o.ChannelId) != 26 {
-		return NewLocAppError("IncomingWebhook.IsValid", "model.incoming_hook.channel_id.app_error", nil, "")
+		return NewAppError("IncomingWebhook.IsValid", "model.incoming_hook.channel_id.app_error", nil, "", http.StatusBadRequest)
 	}
 
 	if len(o.TeamId) != 26 {
-		return NewLocAppError("IncomingWebhook.IsValid", "model.incoming_hook.team_id.app_error", nil, "")
+		return NewAppError("IncomingWebhook.IsValid", "model.incoming_hook.team_id.app_error", nil, "", http.StatusBadRequest)
 	}
 
 	if len(o.DisplayName) > 64 {
-		return NewLocAppError("IncomingWebhook.IsValid", "model.incoming_hook.display_name.app_error", nil, "")
+		return NewAppError("IncomingWebhook.IsValid", "model.incoming_hook.display_name.app_error", nil, "", http.StatusBadRequest)
 	}
 
 	if len(o.Description) > 128 {
-		return NewLocAppError("IncomingWebhook.IsValid", "model.incoming_hook.description.app_error", nil, "")
+		return NewAppError("IncomingWebhook.IsValid", "model.incoming_hook.description.app_error", nil, "", http.StatusBadRequest)
+	}
+
+	if len(o.Username) > 64 {
+		return NewAppError("IncomingWebhook.IsValid", "model.incoming_hook.username.app_error", nil, "", http.StatusBadRequest)
+	}
+
+	if len(o.IconURL) > 1024 {
+		return NewAppError("IncomingWebhook.IsValid", "model.incoming_hook.icon_url.app_error", nil, "", http.StatusBadRequest)
 	}
 
 	return nil
@@ -192,56 +185,7 @@ func decodeIncomingWebhookRequest(by []byte) (*IncomingWebhookRequest, error) {
 	}
 }
 
-// To mention @channel via a webhook in Slack, the message should contain
-// <!channel>, as explained at the bottom of this article:
-// https://get.slack.help/hc/en-us/articles/202009646-Making-announcements
-func expandAnnouncement(text string) string {
-	c1 := "<!channel>"
-	c2 := "@channel"
-	if strings.Contains(text, c1) {
-		return strings.Replace(text, c1, c2, -1)
-	}
-	return text
-}
-
-// Expand announcements in incoming webhooks from Slack. Those announcements
-// can be found in the text attribute, or in the pretext, text, title and value
-// attributes of the attachment structure. The Slack attachment structure is
-// documented here: https://api.slack.com/docs/attachments
-func expandAnnouncements(i *IncomingWebhookRequest) {
-	i.Text = expandAnnouncement(i.Text)
-
-	if i.Attachments != nil {
-		attachments := i.Attachments.([]interface{})
-		for _, attachment := range attachments {
-			a := attachment.(map[string]interface{})
-
-			if a["pretext"] != nil {
-				a["pretext"] = expandAnnouncement(a["pretext"].(string))
-			}
-
-			if a["text"] != nil {
-				a["text"] = expandAnnouncement(a["text"].(string))
-			}
-
-			if a["title"] != nil {
-				a["title"] = expandAnnouncement(a["title"].(string))
-			}
-
-			if a["fields"] != nil {
-				fields := a["fields"].([]interface{})
-				for _, field := range fields {
-					f := field.(map[string]interface{})
-					if f["value"] != nil {
-						f["value"] = expandAnnouncement(f["value"].(string))
-					}
-				}
-			}
-		}
-	}
-}
-
-func IncomingWebhookRequestFromJson(data io.Reader) *IncomingWebhookRequest {
+func IncomingWebhookRequestFromJson(data io.Reader) (*IncomingWebhookRequest, *AppError) {
 	buf := new(bytes.Buffer)
 	buf.ReadFrom(data)
 	by := buf.Bytes()
@@ -252,11 +196,20 @@ func IncomingWebhookRequestFromJson(data io.Reader) *IncomingWebhookRequest {
 	if err != nil {
 		o, err = decodeIncomingWebhookRequest(escapeControlCharsFromPayload(by))
 		if err != nil {
-			return nil
+			return nil, NewAppError("IncomingWebhookRequestFromJson", "Unable to parse incoming data", nil, err.Error(), http.StatusBadRequest)
 		}
 	}
 
-	expandAnnouncements(o)
+	o.Attachments = StringifySlackFieldValue(o.Attachments)
 
-	return o
+	return o, nil
+}
+
+func (o *IncomingWebhookRequest) ToJson() string {
+	b, err := json.Marshal(o)
+	if err != nil {
+		return ""
+	} else {
+		return string(b)
+	}
 }

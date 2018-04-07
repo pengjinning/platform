@@ -1,4 +1,4 @@
-// Copyright (c) 2016 Mattermost, Inc. All Rights Reserved.
+// Copyright (c) 2016-present Mattermost, Inc. All Rights Reserved.
 // See License.txt for license information.
 
 package model
@@ -6,6 +6,7 @@ package model
 import (
 	"encoding/json"
 	"io"
+	"net/http"
 	"strings"
 )
 
@@ -37,93 +38,75 @@ type Command struct {
 }
 
 func (o *Command) ToJson() string {
-	b, err := json.Marshal(o)
-	if err != nil {
-		return ""
-	} else {
-		return string(b)
-	}
+	b, _ := json.Marshal(o)
+	return string(b)
 }
 
 func CommandFromJson(data io.Reader) *Command {
-	decoder := json.NewDecoder(data)
-	var o Command
-	err := decoder.Decode(&o)
-	if err == nil {
-		return &o
-	} else {
-		return nil
-	}
+	var o *Command
+	json.NewDecoder(data).Decode(&o)
+	return o
 }
 
 func CommandListToJson(l []*Command) string {
-	b, err := json.Marshal(l)
-	if err != nil {
-		return ""
-	} else {
-		return string(b)
-	}
+	b, _ := json.Marshal(l)
+	return string(b)
 }
 
 func CommandListFromJson(data io.Reader) []*Command {
-	decoder := json.NewDecoder(data)
 	var o []*Command
-	err := decoder.Decode(&o)
-	if err == nil {
-		return o
-	} else {
-		return nil
-	}
+	json.NewDecoder(data).Decode(&o)
+	return o
 }
 
 func (o *Command) IsValid() *AppError {
 
 	if len(o.Id) != 26 {
-		return NewLocAppError("Command.IsValid", "model.command.is_valid.id.app_error", nil, "")
+		return NewAppError("Command.IsValid", "model.command.is_valid.id.app_error", nil, "", http.StatusBadRequest)
 	}
 
 	if len(o.Token) != 26 {
-		return NewLocAppError("Command.IsValid", "model.command.is_valid.token.app_error", nil, "")
+		return NewAppError("Command.IsValid", "model.command.is_valid.token.app_error", nil, "", http.StatusBadRequest)
 	}
 
 	if o.CreateAt == 0 {
-		return NewLocAppError("Command.IsValid", "model.command.is_valid.create_at.app_error", nil, "")
+		return NewAppError("Command.IsValid", "model.command.is_valid.create_at.app_error", nil, "", http.StatusBadRequest)
 	}
 
 	if o.UpdateAt == 0 {
-		return NewLocAppError("Command.IsValid", "model.command.is_valid.update_at.app_error", nil, "")
+		return NewAppError("Command.IsValid", "model.command.is_valid.update_at.app_error", nil, "", http.StatusBadRequest)
 	}
 
 	if len(o.CreatorId) != 26 {
-		return NewLocAppError("Command.IsValid", "model.command.is_valid.user_id.app_error", nil, "")
+		return NewAppError("Command.IsValid", "model.command.is_valid.user_id.app_error", nil, "", http.StatusBadRequest)
 	}
 
 	if len(o.TeamId) != 26 {
-		return NewLocAppError("Command.IsValid", "model.command.is_valid.team_id.app_error", nil, "")
+		return NewAppError("Command.IsValid", "model.command.is_valid.team_id.app_error", nil, "", http.StatusBadRequest)
 	}
 
 	if len(o.Trigger) < MIN_TRIGGER_LENGTH || len(o.Trigger) > MAX_TRIGGER_LENGTH || strings.Index(o.Trigger, "/") == 0 || strings.Contains(o.Trigger, " ") {
-		return NewLocAppError("Command.IsValid", "model.command.is_valid.trigger.app_error", nil, "")
+		return NewAppError("Command.IsValid", "model.command.is_valid.trigger.app_error", nil, "", http.StatusBadRequest)
 	}
 
 	if len(o.URL) == 0 || len(o.URL) > 1024 {
-		return NewLocAppError("Command.IsValid", "model.command.is_valid.url.app_error", nil, "")
+		return NewAppError("Command.IsValid", "model.command.is_valid.url.app_error", nil, "", http.StatusBadRequest)
 	}
 
 	if !IsValidHttpUrl(o.URL) {
-		return NewLocAppError("Command.IsValid", "model.command.is_valid.url_http.app_error", nil, "")
+		return NewAppError("Command.IsValid", "model.command.is_valid.url_http.app_error", nil, "", http.StatusBadRequest)
 	}
 
 	if !(o.Method == COMMAND_METHOD_GET || o.Method == COMMAND_METHOD_POST) {
-		return NewLocAppError("Command.IsValid", "model.command.is_valid.method.app_error", nil, "")
+		return NewAppError("Command.IsValid", "model.command.is_valid.method.app_error", nil, "", http.StatusBadRequest)
 	}
 
 	if len(o.DisplayName) > 64 {
-		return NewLocAppError("Command.IsValid", "model.command.is_valid.display_name.app_error", nil, "")
+		return NewAppError("Command.IsValid", "model.command.is_valid.display_name.app_error", nil, "", http.StatusBadRequest)
 	}
 
 	if len(o.Description) > 128 {
-		return NewLocAppError("Command.IsValid", "model.command.is_valid.description.app_error", nil, "")
+		return NewAppError("Command.IsValid", "model.command.is_valid.description.app_error", nil, "", http.StatusBadRequest)
 	}
 
 	return nil

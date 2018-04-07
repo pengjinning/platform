@@ -1,4 +1,4 @@
-// Copyright (c) 2015 Mattermost, Inc. All Rights Reserved.
+// Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See License.txt for license information.
 
 package model
@@ -9,10 +9,32 @@ import (
 	"strings"
 )
 
-// This is a list of all the current viersions including any patches.
-// It should be maitained in chronological order with most current
+// This is a list of all the current versions including any patches.
+// It should be maintained in chronological order with most current
 // release at the front of the list.
 var versions = []string{
+	"4.9.0",
+	"4.8.1",
+	"4.8.0",
+	"4.7.2",
+	"4.7.1",
+	"4.7.0",
+	"4.6.0",
+	"4.5.0",
+	"4.4.0",
+	"4.3.0",
+	"4.2.0",
+	"4.1.0",
+	"4.0.0",
+	"3.10.0",
+	"3.9.0",
+	"3.8.0",
+	"3.7.0",
+	"3.6.0",
+	"3.5.0",
+	"3.4.0",
+	"3.3.0",
+	"3.2.0",
 	"3.1.0",
 	"3.0.0",
 	"2.2.0",
@@ -86,10 +108,6 @@ func GetPreviousVersion(version string) string {
 	}
 
 	return ""
-}
-
-func IsOfficalBuild() bool {
-	return BuildNumber != "_BUILD_NUMBER_"
 }
 
 func IsCurrentVersion(versionToCheck string) bool {

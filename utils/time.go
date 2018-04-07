@@ -1,3 +1,6 @@
+// Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
+// See License.txt for license information.
+
 package utils
 
 import (
@@ -6,6 +9,10 @@ import (
 
 func MillisFromTime(t time.Time) int64 {
 	return t.UnixNano() / int64(time.Millisecond)
+}
+
+func TimeFromMillis(millis int64) time.Time {
+	return time.Unix(0, millis*int64(time.Millisecond))
 }
 
 func StartOfDay(t time.Time) time.Time {

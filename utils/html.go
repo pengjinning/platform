@@ -1,120 +1,140 @@
-// Copyright (c) 2016 Mattermost, Inc. All Rights Reserved.
+// Copyright (c) 2016-present Mattermost, Inc. All Rights Reserved.
 // See License.txt for license information.
 
 package utils
 
 import (
 	"bytes"
+	"errors"
 	"html/template"
-	"net/http"
+	"io"
+	"path/filepath"
+	"reflect"
+	"sync/atomic"
 
 	l4g "github.com/alecthomas/log4go"
+	"github.com/fsnotify/fsnotify"
 	"github.com/nicksnyder/go-i18n/i18n"
-	"gopkg.in/fsnotify.v1"
 )
 
-// Global storage for templates
-var htmlTemplates *template.Template
-
-type HTMLTemplate struct {
-	TemplateName string
-	Props        map[string]string
-	Html         map[string]template.HTML
-	Locale       string
+type HTMLTemplateWatcher struct {
+	templates atomic.Value
+	stop      chan struct{}
+	stopped   chan struct{}
 }
 
-func InitHTML() {
-	InitHTMLWithDir("templates")
-}
+func NewHTMLTemplateWatcher(directory string) (*HTMLTemplateWatcher, error) {
+	templatesDir, _ := FindDir(directory)
+	l4g.Debug("Parsing server templates at %v", templatesDir)
 
-func InitHTMLWithDir(dir string) {
-
-	if htmlTemplates != nil {
-		return
+	ret := &HTMLTemplateWatcher{
+		stop:    make(chan struct{}),
+		stopped: make(chan struct{}),
 	}
 
-	templatesDir := FindDir(dir)
-	l4g.Debug(T("api.api.init.parsing_templates.debug"), templatesDir)
-	var err error
-	if htmlTemplates, err = template.ParseGlob(templatesDir + "*.html"); err != nil {
-		l4g.Error(T("api.api.init.parsing_templates.error"), err)
-	}
-
-	// Watch the templates folder for changes.
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
-		l4g.Error(T("web.create_dir.error"), err)
+		return nil, err
+	}
+
+	if err = watcher.Add(templatesDir); err != nil {
+		return nil, err
+	}
+
+	if htmlTemplates, err := template.ParseGlob(filepath.Join(templatesDir, "*.html")); err != nil {
+		return nil, err
+	} else {
+		ret.templates.Store(htmlTemplates)
 	}
 
 	go func() {
+		defer close(ret.stopped)
+		defer watcher.Close()
+
 		for {
 			select {
+			case <-ret.stop:
+				return
 			case event := <-watcher.Events:
 				if event.Op&fsnotify.Write == fsnotify.Write {
-					l4g.Info(T("web.reparse_templates.info"), event.Name)
-					if htmlTemplates, err = template.ParseGlob(templatesDir + "*.html"); err != nil {
-						l4g.Error(T("web.parsing_templates.error"), err)
+					l4g.Info("Re-parsing templates because of modified file %v", event.Name)
+					if htmlTemplates, err := template.ParseGlob(filepath.Join(templatesDir, "*.html")); err != nil {
+						l4g.Error("Failed to parse templates %v", err)
+					} else {
+						ret.templates.Store(htmlTemplates)
 					}
 				}
 			case err := <-watcher.Errors:
-				l4g.Error(T("web.dir_fail.error"), err)
+				l4g.Error("Failed in directory watcher %s", err)
 			}
 		}
 	}()
 
-	err = watcher.Add(templatesDir)
-	if err != nil {
-		l4g.Error(T("web.watcher_fail.error"), err)
-	}
+	return ret, nil
 }
 
-func NewHTMLTemplate(templateName string, locale string) *HTMLTemplate {
+func (w *HTMLTemplateWatcher) Templates() *template.Template {
+	return w.templates.Load().(*template.Template)
+}
+
+func (w *HTMLTemplateWatcher) Close() {
+	close(w.stop)
+	<-w.stopped
+}
+
+type HTMLTemplate struct {
+	Templates    *template.Template
+	TemplateName string
+	Props        map[string]interface{}
+	Html         map[string]template.HTML
+}
+
+func NewHTMLTemplate(templates *template.Template, templateName string) *HTMLTemplate {
 	return &HTMLTemplate{
+		Templates:    templates,
 		TemplateName: templateName,
-		Props:        make(map[string]string),
+		Props:        make(map[string]interface{}),
 		Html:         make(map[string]template.HTML),
-		Locale:       locale,
 	}
-}
-
-func (t *HTMLTemplate) addDefaultProps() {
-	var localT i18n.TranslateFunc
-	if len(t.Locale) > 0 {
-		localT = GetUserTranslations(t.Locale)
-	} else {
-		localT = T
-	}
-
-	t.Props["Footer"] = localT("api.templates.email_footer")
-
-	if *Cfg.EmailSettings.FeedbackOrganization != "" {
-		t.Props["Organization"] = localT("api.templates.email_organization") + *Cfg.EmailSettings.FeedbackOrganization
-	} else {
-		t.Props["Organization"] = ""
-	}
-
-	t.Html["EmailInfo"] = template.HTML(localT("api.templates.email_info",
-		map[string]interface{}{"SupportEmail": Cfg.SupportSettings.SupportEmail, "SiteName": Cfg.TeamSettings.SiteName}))
 }
 
 func (t *HTMLTemplate) Render() string {
-	t.addDefaultProps()
-
 	var text bytes.Buffer
-
-	if err := htmlTemplates.ExecuteTemplate(&text, t.TemplateName, t); err != nil {
-		l4g.Error(T("api.api.render.error"), t.TemplateName, err)
-	}
-
+	t.RenderToWriter(&text)
 	return text.String()
 }
 
-func (t *HTMLTemplate) RenderToWriter(w http.ResponseWriter) error {
-	t.addDefaultProps()
+func (t *HTMLTemplate) RenderToWriter(w io.Writer) error {
+	if t.Templates == nil {
+		return errors.New("no html templates")
+	}
 
-	if err := htmlTemplates.ExecuteTemplate(w, t.TemplateName, t); err != nil {
+	if err := t.Templates.ExecuteTemplate(w, t.TemplateName, t); err != nil {
 		l4g.Error(T("api.api.render.error"), t.TemplateName, err)
 		return err
 	}
+
 	return nil
+}
+
+func TranslateAsHtml(t i18n.TranslateFunc, translationID string, args map[string]interface{}) template.HTML {
+	return template.HTML(t(translationID, escapeForHtml(args)))
+}
+
+func escapeForHtml(arg interface{}) interface{} {
+	switch typedArg := arg.(type) {
+	case string:
+		return template.HTMLEscapeString(typedArg)
+	case *string:
+		return template.HTMLEscapeString(*typedArg)
+	case map[string]interface{}:
+		safeArg := make(map[string]interface{}, len(typedArg))
+		for key, value := range typedArg {
+			safeArg[key] = escapeForHtml(value)
+		}
+		return safeArg
+	default:
+		l4g.Warn("Unable to escape value for HTML template %v of type %v", arg, reflect.ValueOf(arg).Type())
+		return ""
+	}
 }

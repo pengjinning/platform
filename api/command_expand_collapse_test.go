@@ -1,4 +1,4 @@
-// Copyright (c) 2016 Mattermost, Inc. All Rights Reserved.
+// Copyright (c) 2016-present Mattermost, Inc. All Rights Reserved.
 // See License.txt for license information.
 
 package api
@@ -7,15 +7,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mattermost/platform/model"
+	"github.com/mattermost/mattermost-server/model"
 )
 
 func TestExpandCommand(t *testing.T) {
 	th := Setup().InitBasic()
+	defer th.TearDown()
+
 	Client := th.BasicClient
 	channel := th.BasicChannel
 
-	r1 := Client.Must(Client.Command(channel.Id, "/expand", false)).Data.(*model.CommandResponse)
+	r1 := Client.Must(Client.Command(channel.Id, "/expand")).Data.(*model.CommandResponse)
 	if r1 == nil {
 		t.Fatal("Command failed to execute")
 	}
@@ -30,10 +32,12 @@ func TestExpandCommand(t *testing.T) {
 
 func TestCollapseCommand(t *testing.T) {
 	th := Setup().InitBasic()
+	defer th.TearDown()
+
 	Client := th.BasicClient
 	channel := th.BasicChannel
 
-	r1 := Client.Must(Client.Command(channel.Id, "/collapse", false)).Data.(*model.CommandResponse)
+	r1 := Client.Must(Client.Command(channel.Id, "/collapse")).Data.(*model.CommandResponse)
 	if r1 == nil {
 		t.Fatal("Command failed to execute")
 	}

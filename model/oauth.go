@@ -1,4 +1,4 @@
-// Copyright (c) 2015 Mattermost, Inc. All Rights Reserved.
+// Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See License.txt for license information.
 
 package model
@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"unicode/utf8"
 )
 
@@ -15,6 +16,7 @@ const (
 	OAUTH_ACTION_LOGIN        = "login"
 	OAUTH_ACTION_EMAIL_TO_SSO = "email_to_sso"
 	OAUTH_ACTION_SSO_TO_EMAIL = "sso_to_email"
+	OAUTH_ACTION_MOBILE       = "mobile"
 )
 
 type OAuthApp struct {
@@ -25,8 +27,10 @@ type OAuthApp struct {
 	ClientSecret string      `json:"client_secret"`
 	Name         string      `json:"name"`
 	Description  string      `json:"description"`
+	IconURL      string      `json:"icon_url"`
 	CallbackUrls StringArray `json:"callback_urls"`
 	Homepage     string      `json:"homepage"`
+	IsTrusted    bool        `json:"is_trusted"`
 }
 
 // IsValid validates the app and returns an error if it isn't configured
@@ -34,39 +38,51 @@ type OAuthApp struct {
 func (a *OAuthApp) IsValid() *AppError {
 
 	if len(a.Id) != 26 {
-		return NewLocAppError("OAuthApp.IsValid", "model.oauth.is_valid.app_id.app_error", nil, "")
+		return NewAppError("OAuthApp.IsValid", "model.oauth.is_valid.app_id.app_error", nil, "", http.StatusBadRequest)
 	}
 
 	if a.CreateAt == 0 {
-		return NewLocAppError("OAuthApp.IsValid", "model.oauth.is_valid.create_at.app_error", nil, "app_id="+a.Id)
+		return NewAppError("OAuthApp.IsValid", "model.oauth.is_valid.create_at.app_error", nil, "app_id="+a.Id, http.StatusBadRequest)
 	}
 
 	if a.UpdateAt == 0 {
-		return NewLocAppError("OAuthApp.IsValid", "model.oauth.is_valid.update_at.app_error", nil, "app_id="+a.Id)
+		return NewAppError("OAuthApp.IsValid", "model.oauth.is_valid.update_at.app_error", nil, "app_id="+a.Id, http.StatusBadRequest)
 	}
 
 	if len(a.CreatorId) != 26 {
-		return NewLocAppError("OAuthApp.IsValid", "model.oauth.is_valid.creator_id.app_error", nil, "app_id="+a.Id)
+		return NewAppError("OAuthApp.IsValid", "model.oauth.is_valid.creator_id.app_error", nil, "app_id="+a.Id, http.StatusBadRequest)
 	}
 
 	if len(a.ClientSecret) == 0 || len(a.ClientSecret) > 128 {
-		return NewLocAppError("OAuthApp.IsValid", "model.oauth.is_valid.client_secret.app_error", nil, "app_id="+a.Id)
+		return NewAppError("OAuthApp.IsValid", "model.oauth.is_valid.client_secret.app_error", nil, "app_id="+a.Id, http.StatusBadRequest)
 	}
 
 	if len(a.Name) == 0 || len(a.Name) > 64 {
-		return NewLocAppError("OAuthApp.IsValid", "model.oauth.is_valid.name.app_error", nil, "app_id="+a.Id)
+		return NewAppError("OAuthApp.IsValid", "model.oauth.is_valid.name.app_error", nil, "app_id="+a.Id, http.StatusBadRequest)
 	}
 
 	if len(a.CallbackUrls) == 0 || len(fmt.Sprintf("%s", a.CallbackUrls)) > 1024 {
-		return NewLocAppError("OAuthApp.IsValid", "model.oauth.is_valid.callback.app_error", nil, "app_id="+a.Id)
+		return NewAppError("OAuthApp.IsValid", "model.oauth.is_valid.callback.app_error", nil, "app_id="+a.Id, http.StatusBadRequest)
 	}
 
-	if len(a.Homepage) == 0 || len(a.Homepage) > 256 {
-		return NewLocAppError("OAuthApp.IsValid", "model.oauth.is_valid.homepage.app_error", nil, "app_id="+a.Id)
+	for _, callback := range a.CallbackUrls {
+		if !IsValidHttpUrl(callback) {
+			return NewAppError("OAuthApp.IsValid", "model.oauth.is_valid.callback.app_error", nil, "", http.StatusBadRequest)
+		}
+	}
+
+	if len(a.Homepage) == 0 || len(a.Homepage) > 256 || !IsValidHttpUrl(a.Homepage) {
+		return NewAppError("OAuthApp.IsValid", "model.oauth.is_valid.homepage.app_error", nil, "app_id="+a.Id, http.StatusBadRequest)
 	}
 
 	if utf8.RuneCountInString(a.Description) > 512 {
-		return NewLocAppError("OAuthApp.IsValid", "model.oauth.is_valid.description.app_error", nil, "app_id="+a.Id)
+		return NewAppError("OAuthApp.IsValid", "model.oauth.is_valid.description.app_error", nil, "app_id="+a.Id, http.StatusBadRequest)
+	}
+
+	if len(a.IconURL) > 0 {
+		if len(a.IconURL) > 512 || !IsValidHttpUrl(a.IconURL) {
+			return NewAppError("OAuthApp.IsValid", "model.oauth.is_valid.icon_url.app_error", nil, "app_id="+a.Id, http.StatusBadRequest)
+		}
 	}
 
 	return nil
@@ -85,10 +101,6 @@ func (a *OAuthApp) PreSave() {
 
 	a.CreateAt = GetMillis()
 	a.UpdateAt = a.CreateAt
-
-	if len(a.ClientSecret) > 0 {
-		a.ClientSecret = HashPassword(a.ClientSecret)
-	}
 }
 
 // PreUpdate should be run before updating the app in the db.
@@ -98,12 +110,8 @@ func (a *OAuthApp) PreUpdate() {
 
 // ToJson convert a User to a json string
 func (a *OAuthApp) ToJson() string {
-	b, err := json.Marshal(a)
-	if err != nil {
-		return ""
-	} else {
-		return string(b)
-	}
+	b, _ := json.Marshal(a)
+	return string(b)
 }
 
 // Generate a valid strong etag so the browser can cache the results
@@ -128,32 +136,18 @@ func (a *OAuthApp) IsValidRedirectURL(url string) bool {
 
 // OAuthAppFromJson will decode the input and return a User
 func OAuthAppFromJson(data io.Reader) *OAuthApp {
-	decoder := json.NewDecoder(data)
-	var app OAuthApp
-	err := decoder.Decode(&app)
-	if err == nil {
-		return &app
-	} else {
-		return nil
-	}
+	var app *OAuthApp
+	json.NewDecoder(data).Decode(&app)
+	return app
 }
 
-func OAuthAppMapToJson(a map[string]*OAuthApp) string {
-	b, err := json.Marshal(a)
-	if err != nil {
-		return ""
-	} else {
-		return string(b)
-	}
+func OAuthAppListToJson(l []*OAuthApp) string {
+	b, _ := json.Marshal(l)
+	return string(b)
 }
 
-func OAuthAppMapFromJson(data io.Reader) map[string]*OAuthApp {
-	decoder := json.NewDecoder(data)
-	var apps map[string]*OAuthApp
-	err := decoder.Decode(&apps)
-	if err == nil {
-		return apps
-	} else {
-		return nil
-	}
+func OAuthAppListFromJson(data io.Reader) []*OAuthApp {
+	var o []*OAuthApp
+	json.NewDecoder(data).Decode(&o)
+	return o
 }

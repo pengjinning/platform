@@ -1,4 +1,4 @@
-// Copyright (c) 2015 Mattermost, Inc. All Rights Reserved.
+// Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See License.txt for license information.
 
 package model
@@ -30,14 +30,15 @@ func TestChannelMemberIsValid(t *testing.T) {
 		t.Fatal("should be invalid")
 	}
 
-	o.Roles = "missing"
+	o.NotifyProps = GetDefaultChannelNotifyProps()
+	o.UserId = NewId()
+	/*o.Roles = "missing"
 	o.NotifyProps = GetDefaultChannelNotifyProps()
 	o.UserId = NewId()
 	if err := o.IsValid(); err == nil {
 		t.Fatal("should be invalid")
-	}
+	}*/
 
-	o.Roles = CHANNEL_ROLE_ADMIN
 	o.NotifyProps["desktop"] = "junk"
 	if err := o.IsValid(); err == nil {
 		t.Fatal("should be invalid")
@@ -66,5 +67,19 @@ func TestChannelMemberIsValid(t *testing.T) {
 	o.Roles = ""
 	if err := o.IsValid(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestChannelUnreadJson(t *testing.T) {
+	o := ChannelUnread{ChannelId: NewId(), TeamId: NewId(), MsgCount: 5, MentionCount: 3}
+	json := o.ToJson()
+	ro := ChannelUnreadFromJson(strings.NewReader(json))
+
+	if o.TeamId != ro.TeamId {
+		t.Fatal("Team Ids do not match")
+	}
+
+	if o.MentionCount != ro.MentionCount {
+		t.Fatal("MentionCount do not match")
 	}
 }

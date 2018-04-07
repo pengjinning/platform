@@ -1,4 +1,4 @@
-// Copyright (c) 2015 Mattermost, Inc. All Rights Reserved.
+// Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See License.txt for license information.
 
 package model
@@ -30,7 +30,7 @@ func TestTeamMemberIsValid(t *testing.T) {
 		t.Fatal("should be invalid")
 	}
 
-	o.UserId = NewId()
+	/*o.UserId = NewId()
 	o.Roles = "blahblah"
 	if err := o.IsValid(); err == nil {
 		t.Fatal("should be invalid")
@@ -39,5 +39,19 @@ func TestTeamMemberIsValid(t *testing.T) {
 	o.Roles = ""
 	if err := o.IsValid(); err != nil {
 		t.Fatal(err)
+	}*/
+}
+
+func TestUnreadMemberJson(t *testing.T) {
+	o := TeamUnread{TeamId: NewId(), MsgCount: 5, MentionCount: 3}
+	json := o.ToJson()
+
+	r := TeamUnreadFromJson(strings.NewReader(json))
+	if o.TeamId != r.TeamId {
+		t.Fatal("Ids do not match")
+	}
+
+	if o.MsgCount != r.MsgCount {
+		t.Fatal("MsgCount do not match")
 	}
 }

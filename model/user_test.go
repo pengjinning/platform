@@ -1,9 +1,11 @@
-// Copyright (c) 2015 Mattermost, Inc. All Rights Reserved.
+// Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See License.txt for license information.
 
 package model
 
 import (
+	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 )
@@ -34,24 +36,18 @@ func TestUserPreSave(t *testing.T) {
 	user := User{Password: "test"}
 	user.PreSave()
 	user.Etag(true, true)
+	if user.Timezone == nil {
+		t.Fatal("Timezone is nil")
+	}
+
+	if user.Timezone["useAutomaticTimezone"] != "true" {
+		t.Fatal("Timezone is not set to default")
+	}
 }
 
 func TestUserPreUpdate(t *testing.T) {
 	user := User{Password: "test"}
 	user.PreUpdate()
-
-	user.ThemeProps = StringMap{
-		"codeTheme":     "github",
-		"awayIndicator": "#cdbd4e",
-		"buttonColor":   "invalid",
-	}
-	user.PreUpdate()
-
-	if user.ThemeProps["codeTheme"] != "github" || user.ThemeProps["awayIndicator"] != "#cdbd4e" {
-		t.Fatal("shouldn't have changed valid theme props")
-	} else if user.ThemeProps["buttonColor"] != "#ffffff" {
-		t.Fatal("should've changed invalid theme prop")
-	}
 }
 
 func TestUserUpdateMentionKeysFromUsername(t *testing.T) {
@@ -59,52 +55,52 @@ func TestUserUpdateMentionKeysFromUsername(t *testing.T) {
 	user.SetDefaultNotifications()
 
 	if user.NotifyProps["mention_keys"] != "user,@user" {
-		t.Fatal("default mention keys are invalid: %v", user.NotifyProps["mention_keys"])
+		t.Fatalf("default mention keys are invalid: %v", user.NotifyProps["mention_keys"])
 	}
 
 	user.Username = "person"
 	user.UpdateMentionKeysFromUsername("user")
 	if user.NotifyProps["mention_keys"] != "person,@person" {
-		t.Fatal("mention keys are invalid after changing username: %v", user.NotifyProps["mention_keys"])
+		t.Fatalf("mention keys are invalid after changing username: %v", user.NotifyProps["mention_keys"])
 	}
 
 	user.NotifyProps["mention_keys"] += ",mention"
 	user.UpdateMentionKeysFromUsername("person")
 	if user.NotifyProps["mention_keys"] != "person,@person,mention" {
-		t.Fatal("mention keys are invalid after adding extra mention keyword: %v", user.NotifyProps["mention_keys"])
+		t.Fatalf("mention keys are invalid after adding extra mention keyword: %v", user.NotifyProps["mention_keys"])
 	}
 
 	user.Username = "user"
 	user.UpdateMentionKeysFromUsername("person")
 	if user.NotifyProps["mention_keys"] != "user,@user,mention" {
-		t.Fatal("mention keys are invalid after changing username with extra mention keyword: %v", user.NotifyProps["mention_keys"])
+		t.Fatalf("mention keys are invalid after changing username with extra mention keyword: %v", user.NotifyProps["mention_keys"])
 	}
 }
 
 func TestUserIsValid(t *testing.T) {
 	user := User{}
 
-	if err := user.IsValid(); err == nil {
-		t.Fatal()
+	if err := user.IsValid(); !HasExpectedUserIsValidError(err, "id", "") {
+		t.Fatal(err)
 	}
 
 	user.Id = NewId()
-	if err := user.IsValid(); err == nil {
+	if err := user.IsValid(); !HasExpectedUserIsValidError(err, "create_at", user.Id) {
 		t.Fatal()
 	}
 
 	user.CreateAt = GetMillis()
-	if err := user.IsValid(); err == nil {
+	if err := user.IsValid(); !HasExpectedUserIsValidError(err, "update_at", user.Id) {
 		t.Fatal()
 	}
 
 	user.UpdateAt = GetMillis()
-	if err := user.IsValid(); err == nil {
+	if err := user.IsValid(); !HasExpectedUserIsValidError(err, "username", user.Id) {
 		t.Fatal()
 	}
 
 	user.Username = NewId() + "^hello#"
-	if err := user.IsValid(); err == nil {
+	if err := user.IsValid(); !HasExpectedUserIsValidError(err, "username", user.Id) {
 		t.Fatal()
 	}
 
@@ -114,13 +110,13 @@ func TestUserIsValid(t *testing.T) {
 		t.Fatal()
 	}
 
-	user.Email = "test@nowhere.com"
-	user.Nickname = strings.Repeat("01234567890", 20)
-	if err := user.IsValid(); err == nil {
+	user.Email = strings.Repeat("a", 128)
+	user.Nickname = strings.Repeat("a", 65)
+	if err := user.IsValid(); !HasExpectedUserIsValidError(err, "nickname", user.Id) {
 		t.Fatal()
 	}
 
-	user.Nickname = ""
+	user.Nickname = strings.Repeat("a", 64)
 	if err := user.IsValid(); err != nil {
 		t.Fatal(err)
 	}
@@ -131,16 +127,38 @@ func TestUserIsValid(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	user.FirstName = strings.Repeat("01234567890", 20)
-	if err := user.IsValid(); err == nil {
+	user.FirstName = strings.Repeat("a", 65)
+	if err := user.IsValid(); !HasExpectedUserIsValidError(err, "first_name", user.Id) {
 		t.Fatal(err)
 	}
 
-	user.FirstName = ""
-	user.LastName = strings.Repeat("01234567890", 20)
-	if err := user.IsValid(); err == nil {
+	user.FirstName = strings.Repeat("a", 64)
+	user.LastName = strings.Repeat("a", 65)
+	if err := user.IsValid(); !HasExpectedUserIsValidError(err, "last_name", user.Id) {
 		t.Fatal(err)
 	}
+
+	user.LastName = strings.Repeat("a", 64)
+	user.Position = strings.Repeat("a", 128)
+	if err := user.IsValid(); err != nil {
+		t.Fatal(err)
+	}
+
+	user.Position = strings.Repeat("a", 129)
+	if err := user.IsValid(); !HasExpectedUserIsValidError(err, "position", user.Id) {
+		t.Fatal(err)
+	}
+}
+
+func HasExpectedUserIsValidError(err *AppError, fieldName string, userId string) bool {
+	if err == nil {
+		return false
+	}
+
+	return err.Where == "User.IsValid" &&
+		err.Id == fmt.Sprintf("model.user.is_valid.%s.app_error", fieldName) &&
+		err.StatusCode == http.StatusBadRequest &&
+		(userId == "" || err.DetailedError == "user_id="+userId)
 }
 
 func TestUserGetFullName(t *testing.T) {
@@ -168,20 +186,37 @@ func TestUserGetFullName(t *testing.T) {
 }
 
 func TestUserGetDisplayName(t *testing.T) {
-	user := User{Username: "user"}
+	user := User{Username: "username"}
 
-	if displayName := user.GetDisplayName(); displayName != "user" {
+	if displayName := user.GetDisplayName(SHOW_FULLNAME); displayName != "username" {
+		t.Fatal("Display name should be username")
+	}
+
+	if displayName := user.GetDisplayName(SHOW_NICKNAME_FULLNAME); displayName != "username" {
+		t.Fatal("Display name should be username")
+	}
+
+	if displayName := user.GetDisplayName(SHOW_USERNAME); displayName != "username" {
 		t.Fatal("Display name should be username")
 	}
 
 	user.FirstName = "first"
 	user.LastName = "last"
-	if displayName := user.GetDisplayName(); displayName != "first last" {
+
+	if displayName := user.GetDisplayName(SHOW_FULLNAME); displayName != "first last" {
 		t.Fatal("Display name should be full name")
 	}
 
+	if displayName := user.GetDisplayName(SHOW_NICKNAME_FULLNAME); displayName != "first last" {
+		t.Fatal("Display name should be full name since there is no nickname")
+	}
+
+	if displayName := user.GetDisplayName(SHOW_USERNAME); displayName != "username" {
+		t.Fatal("Display name should be username")
+	}
+
 	user.Nickname = "nickname"
-	if displayName := user.GetDisplayName(); displayName != "nickname" {
+	if displayName := user.GetDisplayName(SHOW_NICKNAME_FULLNAME); displayName != "nickname" {
 		t.Fatal("Display name should be nickname")
 	}
 }
@@ -191,6 +226,11 @@ var usernames = []struct {
 	expected bool
 }{
 	{"spin-punch", true},
+	{"sp", true},
+	{"s", true},
+	{"1spin-punch", true},
+	{"-spin-punch", true},
+	{".spin-punch", true},
 	{"Spin-punch", false},
 	{"spin punch-", false},
 	{"spin_punch", true},
@@ -207,6 +247,30 @@ func TestValidUsername(t *testing.T) {
 		if IsValidUsername(v.value) != v.expected {
 			t.Errorf("expect %v as %v", v.value, v.expected)
 		}
+	}
+}
+
+func TestNormalizeUsername(t *testing.T) {
+	if NormalizeUsername("Spin-punch") != "spin-punch" {
+		t.Fatal("didn't normalize username properly")
+	}
+	if NormalizeUsername("PUNCH") != "punch" {
+		t.Fatal("didn't normalize username properly")
+	}
+	if NormalizeUsername("spin") != "spin" {
+		t.Fatal("didn't normalize username properly")
+	}
+}
+
+func TestNormalizeEmail(t *testing.T) {
+	if NormalizeEmail("TEST@EXAMPLE.COM") != "test@example.com" {
+		t.Fatal("didn't normalize email properly")
+	}
+	if NormalizeEmail("TEST2@example.com") != "test2@example.com" {
+		t.Fatal("didn't normalize email properly")
+	}
+	if NormalizeEmail("test3@example.com") != "test3@example.com" {
+		t.Fatal("didn't normalize email properly")
 	}
 }
 
@@ -230,11 +294,15 @@ func TestCleanUsername(t *testing.T) {
 
 func TestRoles(t *testing.T) {
 
-	if IsValidUserRoles("admin") {
+	if !IsValidUserRoles("team_user") {
 		t.Fatal()
 	}
 
-	if IsValidUserRoles("junk") {
+	if IsValidUserRoles("system_admin") {
+		t.Fatal()
+	}
+
+	if !IsValidUserRoles("system_user system_admin") {
 		t.Fatal()
 	}
 

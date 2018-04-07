@@ -1,4 +1,4 @@
-// Copyright (c) 2016 Mattermost, Inc. All Rights Reserved.
+// Copyright (c) 2016-present Mattermost, Inc. All Rights Reserved.
 // See License.txt for license information.
 
 package model
@@ -6,6 +6,7 @@ package model
 import (
 	"encoding/json"
 	"io"
+	"net/http"
 	"strings"
 )
 
@@ -37,12 +38,8 @@ type Compliance struct {
 type Compliances []Compliance
 
 func (o *Compliance) ToJson() string {
-	b, err := json.Marshal(o)
-	if err != nil {
-		return ""
-	} else {
-		return string(b)
-	}
+	b, _ := json.Marshal(o)
+	return string(b)
 }
 
 func (me *Compliance) PreSave() {
@@ -55,7 +52,7 @@ func (me *Compliance) PreSave() {
 	}
 
 	me.Count = 0
-	me.Emails = strings.ToLower(me.Emails)
+	me.Emails = NormalizeEmail(me.Emails)
 	me.Keywords = strings.ToLower(me.Keywords)
 
 	me.CreateAt = GetMillis()
@@ -75,41 +72,36 @@ func (me *Compliance) JobName() string {
 func (me *Compliance) IsValid() *AppError {
 
 	if len(me.Id) != 26 {
-		return NewLocAppError("Compliance.IsValid", "model.compliance.is_valid.id.app_error", nil, "")
+		return NewAppError("Compliance.IsValid", "model.compliance.is_valid.id.app_error", nil, "", http.StatusBadRequest)
 	}
 
 	if me.CreateAt == 0 {
-		return NewLocAppError("Compliance.IsValid", "model.compliance.is_valid.create_at.app_error", nil, "")
+		return NewAppError("Compliance.IsValid", "model.compliance.is_valid.create_at.app_error", nil, "", http.StatusBadRequest)
 	}
 
 	if len(me.Desc) > 512 || len(me.Desc) == 0 {
-		return NewLocAppError("Compliance.IsValid", "model.compliance.is_valid.desc.app_error", nil, "")
+		return NewAppError("Compliance.IsValid", "model.compliance.is_valid.desc.app_error", nil, "", http.StatusBadRequest)
 	}
 
 	if me.StartAt == 0 {
-		return NewLocAppError("Compliance.IsValid", "model.compliance.is_valid.start_at.app_error", nil, "")
+		return NewAppError("Compliance.IsValid", "model.compliance.is_valid.start_at.app_error", nil, "", http.StatusBadRequest)
 	}
 
 	if me.EndAt == 0 {
-		return NewLocAppError("Compliance.IsValid", "model.compliance.is_valid.end_at.app_error", nil, "")
+		return NewAppError("Compliance.IsValid", "model.compliance.is_valid.end_at.app_error", nil, "", http.StatusBadRequest)
 	}
 
 	if me.EndAt <= me.StartAt {
-		return NewLocAppError("Compliance.IsValid", "model.compliance.is_valid.start_end_at.app_error", nil, "")
+		return NewAppError("Compliance.IsValid", "model.compliance.is_valid.start_end_at.app_error", nil, "", http.StatusBadRequest)
 	}
 
 	return nil
 }
 
 func ComplianceFromJson(data io.Reader) *Compliance {
-	decoder := json.NewDecoder(data)
-	var o Compliance
-	err := decoder.Decode(&o)
-	if err == nil {
-		return &o
-	} else {
-		return nil
-	}
+	var o *Compliance
+	json.NewDecoder(data).Decode(&o)
+	return o
 }
 
 func (o Compliances) ToJson() string {
@@ -121,12 +113,7 @@ func (o Compliances) ToJson() string {
 }
 
 func CompliancesFromJson(data io.Reader) Compliances {
-	decoder := json.NewDecoder(data)
 	var o Compliances
-	err := decoder.Decode(&o)
-	if err == nil {
-		return o
-	} else {
-		return nil
-	}
+	json.NewDecoder(data).Decode(&o)
+	return o
 }

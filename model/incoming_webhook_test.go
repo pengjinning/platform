@@ -1,4 +1,4 @@
-// Copyright (c) 2015 Mattermost, Inc. All Rights Reserved.
+// Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See License.txt for license information.
 
 package model
@@ -89,6 +89,26 @@ func TestIncomingWebhookIsValid(t *testing.T) {
 	if err := o.IsValid(); err != nil {
 		t.Fatal(err)
 	}
+
+	o.Username = strings.Repeat("1", 65)
+	if err := o.IsValid(); err == nil {
+		t.Fatal("should be invalid")
+	}
+
+	o.Username = strings.Repeat("1", 64)
+	if err := o.IsValid(); err != nil {
+		t.Fatal(err)
+	}
+
+	o.IconURL = strings.Repeat("1", 1025)
+	if err := o.IsValid(); err == nil {
+		t.Fatal("should be invalid")
+	}
+
+	o.IconURL = strings.Repeat("1", 1024)
+	if err := o.IsValid(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestIncomingWebhookPreSave(t *testing.T) {
@@ -99,65 +119,6 @@ func TestIncomingWebhookPreSave(t *testing.T) {
 func TestIncomingWebhookPreUpdate(t *testing.T) {
 	o := IncomingWebhook{}
 	o.PreUpdate()
-}
-
-func TestIncomingWebhookRequestFromJson_Announcements(t *testing.T) {
-	text := "This message will send a notification to all team members in the channel where you post the message, because it contains: <!channel>"
-	expected := "This message will send a notification to all team members in the channel where you post the message, because it contains: @channel"
-
-	// simple payload
-	payload := `{"text": "` + text + `"}`
-	data := strings.NewReader(payload)
-	iwr := IncomingWebhookRequestFromJson(data)
-
-	if iwr == nil {
-		t.Fatal("IncomingWebhookRequest should not be nil")
-	}
-	if iwr.Text != expected {
-		t.Fatalf("Sample text should be: %s, got: %s", expected, iwr.Text)
-	}
-
-	// payload with attachment (pretext, title, text, value)
-	payload = `{
-			"attachments": [
-				{
-					"pretext": "` + text + `",
-					"title": "` + text + `",
-					"text": "` + text + `",
-					"fields": [
-						{
-							"title": "A title",
-							"value": "` + text + `",
-							"short": false
-						}
-					]
-				}
-			]
-		}`
-
-	data = strings.NewReader(payload)
-	iwr = IncomingWebhookRequestFromJson(data)
-
-	if iwr == nil {
-		t.Fatal("IncomingWebhookRequest should not be nil")
-	}
-
-	attachments := iwr.Attachments.([]interface{})
-	attachment := attachments[0].(map[string]interface{})
-	if attachment["pretext"] != expected {
-		t.Fatalf("Sample attachment pretext should be: %s, got: %s", expected, attachment["pretext"])
-	}
-	if attachment["text"] != expected {
-		t.Fatalf("Sample attachment text should be: %s, got: %s", expected, attachment["text"])
-	}
-	if attachment["title"] != expected {
-		t.Fatalf("Sample attachment title should be: %s, got: %s", expected, attachment["title"])
-	}
-	fields := attachment["fields"].([]interface{})
-	field := fields[0].(map[string]interface{})
-	if field["value"] != expected {
-		t.Fatalf("Sample attachment field value should be: %s, got: %s", expected, field["value"])
-	}
 }
 
 func TestIncomingWebhookRequestFromJson(t *testing.T) {
@@ -214,7 +175,7 @@ func TestIncomingWebhookRequestFromJson(t *testing.T) {
 
 		// try to create an IncomingWebhookRequest from the payload
 		data := strings.NewReader(payload)
-		iwr := IncomingWebhookRequestFromJson(data)
+		iwr, _ := IncomingWebhookRequestFromJson(data)
 
 		// After it has been decoded, the JSON string won't contain the escape char anymore
 		expected := strings.Replace(text, `\"`, `"`, -1)
@@ -224,10 +185,24 @@ func TestIncomingWebhookRequestFromJson(t *testing.T) {
 		if iwr.Text != expected {
 			t.Fatalf("Sample %d text should be: %s, got: %s", i, expected, iwr.Text)
 		}
-		attachments := iwr.Attachments.([]interface{})
-		attachment := attachments[0].(map[string]interface{})
-		if attachment["text"] != expected {
-			t.Fatalf("Sample %d attachment text should be: %s, got: %s", i, expected, attachment["text"])
+
+		attachment := iwr.Attachments[0]
+		if attachment.Text != expected {
+			t.Fatalf("Sample %d attachment text should be: %s, got: %s", i, expected, attachment.Text)
 		}
+	}
+}
+
+func TestIncomingWebhookNullArrayItems(t *testing.T) {
+	payload := `{"attachments":[{"fields":[{"title":"foo","value":"bar","short":true}, null]}, null]}`
+	iwr, _ := IncomingWebhookRequestFromJson(strings.NewReader(payload))
+	if iwr == nil {
+		t.Fatal("IncomingWebhookRequest should not be nil")
+	}
+	if len(iwr.Attachments) != 1 {
+		t.Fatalf("expected one attachment")
+	}
+	if len(iwr.Attachments[0].Fields) != 1 {
+		t.Fatalf("expected one field")
 	}
 }

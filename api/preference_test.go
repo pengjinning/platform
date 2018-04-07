@@ -1,15 +1,18 @@
-// Copyright (c) 2015 Mattermost, Inc. All Rights Reserved.
+// Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See License.txt for license information.
 
 package api
 
 import (
-	"github.com/mattermost/platform/model"
 	"testing"
+
+	"github.com/mattermost/mattermost-server/model"
 )
 
 func TestGetAllPreferences(t *testing.T) {
 	th := Setup().InitBasic()
+	defer th.TearDown()
+
 	Client := th.BasicClient
 	user1 := th.BasicUser
 
@@ -52,6 +55,8 @@ func TestGetAllPreferences(t *testing.T) {
 
 func TestSetPreferences(t *testing.T) {
 	th := Setup().InitBasic()
+	defer th.TearDown()
+
 	Client := th.BasicClient
 	user1 := th.BasicUser
 
@@ -88,6 +93,8 @@ func TestSetPreferences(t *testing.T) {
 
 func TestGetPreferenceCategory(t *testing.T) {
 	th := Setup().InitBasic()
+	defer th.TearDown()
+
 	Client := th.BasicClient
 	user1 := th.BasicUser
 
@@ -132,6 +139,8 @@ func TestGetPreferenceCategory(t *testing.T) {
 
 func TestGetPreference(t *testing.T) {
 	th := Setup().InitBasic()
+	defer th.TearDown()
+
 	Client := th.BasicClient
 	user := th.BasicUser
 
@@ -159,5 +168,53 @@ func TestGetPreference(t *testing.T) {
 		t.Fatal(err)
 	} else if data := result.Data.(*model.Preference); *data != preferences[0] {
 		t.Fatal("preference updated incorrectly")
+	}
+}
+
+func TestDeletePreferences(t *testing.T) {
+	th := Setup().InitBasic()
+	defer th.TearDown()
+
+	Client := th.BasicClient
+	user1 := th.BasicUser
+
+	var originalCount int
+	if result, err := Client.GetAllPreferences(); err != nil {
+		t.Fatal(err)
+	} else {
+		originalCount = len(result.Data.(model.Preferences))
+	}
+
+	// save 10 preferences
+	var preferences model.Preferences
+	for i := 0; i < 10; i++ {
+		preference := model.Preference{
+			UserId:   user1.Id,
+			Category: model.PREFERENCE_CATEGORY_DIRECT_CHANNEL_SHOW,
+			Name:     model.NewId(),
+		}
+		preferences = append(preferences, preference)
+	}
+
+	if _, err := Client.SetPreferences(&preferences); err != nil {
+		t.Fatal(err)
+	}
+
+	// delete 10 preferences
+	th.LoginBasic2()
+
+	if _, err := Client.DeletePreferences(&preferences); err == nil {
+		t.Fatal("shouldn't have been able to delete another user's preferences")
+	}
+
+	th.LoginBasic()
+	if _, err := Client.DeletePreferences(&preferences); err != nil {
+		t.Fatal(err)
+	}
+
+	if result, err := Client.GetAllPreferences(); err != nil {
+		t.Fatal(err)
+	} else if data := result.Data.(model.Preferences); len(data) != originalCount {
+		t.Fatal("should've deleted preferences")
 	}
 }

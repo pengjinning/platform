@@ -1,4 +1,4 @@
-// Copyright (c) 2015 Mattermost, Inc. All Rights Reserved.
+// Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See License.txt for license information.
 
 package model
@@ -136,6 +136,7 @@ func TestOutgoingWebhookPayloadToFormValues(t *testing.T) {
 		PostId:      "PostId",
 		Text:        "Text",
 		TriggerWord: "TriggerWord",
+		FileIds:     "FileIds",
 	}
 	v := url.Values{}
 	v.Set("token", "Token")
@@ -149,6 +150,7 @@ func TestOutgoingWebhookPayloadToFormValues(t *testing.T) {
 	v.Set("post_id", "PostId")
 	v.Set("text", "Text")
 	v.Set("trigger_word", "TriggerWord")
+	v.Set("file_ids", "FileIds")
 	if got, want := p.ToFormValues(), v.Encode(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Got %+v, wanted %+v", got, want)
 	}
@@ -162,4 +164,27 @@ func TestOutgoingWebhookPreSave(t *testing.T) {
 func TestOutgoingWebhookPreUpdate(t *testing.T) {
 	o := OutgoingWebhook{}
 	o.PreUpdate()
+}
+
+func TestOutgoingWebhookTriggerWordStartsWith(t *testing.T) {
+	o := OutgoingWebhook{Id: NewId()}
+	o.TriggerWords = append(o.TriggerWords, "foo")
+	if !o.TriggerWordStartsWith("foobar") {
+		t.Fatal("Should return true")
+	}
+	if o.TriggerWordStartsWith("barfoo") {
+		t.Fatal("Should return false")
+	}
+}
+
+func TestOutgoingWebhookResponseJson(t *testing.T) {
+	o := OutgoingWebhookResponse{}
+	o.Text = NewString("some text")
+
+	json := o.ToJson()
+	ro := OutgoingWebhookResponseFromJson(strings.NewReader(json))
+
+	if *o.Text != *ro.Text {
+		t.Fatal("Text does not match")
+	}
 }

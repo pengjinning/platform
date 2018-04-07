@@ -1,4 +1,4 @@
-// Copyright (c) 2015 Mattermost, Inc. All Rights Reserved.
+// Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See License.txt for license information.
 
 package model
@@ -6,6 +6,7 @@ package model
 import (
 	"encoding/json"
 	"io"
+	"sort"
 )
 
 type PostList struct {
@@ -13,8 +14,36 @@ type PostList struct {
 	Posts map[string]*Post `json:"posts"`
 }
 
+func NewPostList() *PostList {
+	return &PostList{
+		Order: make([]string, 0),
+		Posts: make(map[string]*Post),
+	}
+}
+
+func (o *PostList) WithRewrittenImageURLs(f func(string) string) *PostList {
+	copy := *o
+	copy.Posts = make(map[string]*Post)
+	for id, post := range o.Posts {
+		copy.Posts[id] = post.WithRewrittenImageURLs(f)
+	}
+	return &copy
+}
+
+func (o *PostList) StripActionIntegrations() {
+	posts := o.Posts
+	o.Posts = make(map[string]*Post)
+	for id, post := range posts {
+		pcopy := *post
+		pcopy.StripActionIntegrations()
+		o.Posts[id] = &pcopy
+	}
+}
+
 func (o *PostList) ToJson() string {
-	b, err := json.Marshal(o)
+	copy := *o
+	copy.StripActionIntegrations()
+	b, err := json.Marshal(&copy)
 	if err != nil {
 		return ""
 	} else {
@@ -63,6 +92,12 @@ func (o *PostList) Extend(other *PostList) {
 	}
 }
 
+func (o *PostList) SortByCreateAt() {
+	sort.Slice(o.Order, func(i, j int) bool {
+		return o.Posts[o.Order[i]].CreateAt > o.Posts[o.Order[j]].CreateAt
+	})
+}
+
 func (o *PostList) Etag() string {
 
 	id := "0"
@@ -72,10 +107,18 @@ func (o *PostList) Etag() string {
 		if v.UpdateAt > t {
 			t = v.UpdateAt
 			id = v.Id
+		} else if v.UpdateAt == t && v.Id > id {
+			t = v.UpdateAt
+			id = v.Id
 		}
 	}
 
-	return Etag(id, t)
+	orderId := ""
+	if len(o.Order) > 0 {
+		orderId = o.Order[0]
+	}
+
+	return Etag(orderId, id, t)
 }
 
 func (o *PostList) IsChannelId(channelId string) bool {
@@ -89,12 +132,7 @@ func (o *PostList) IsChannelId(channelId string) bool {
 }
 
 func PostListFromJson(data io.Reader) *PostList {
-	decoder := json.NewDecoder(data)
-	var o PostList
-	err := decoder.Decode(&o)
-	if err == nil {
-		return &o
-	} else {
-		return nil
-	}
+	var o *PostList
+	json.NewDecoder(data).Decode(&o)
+	return o
 }

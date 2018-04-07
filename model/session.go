@@ -1,4 +1,4 @@
-// Copyright (c) 2015 Mattermost, Inc. All Rights Reserved.
+// Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See License.txt for license information.
 
 package model
@@ -6,14 +6,21 @@ package model
 import (
 	"encoding/json"
 	"io"
+	"strings"
 )
 
 const (
-	SESSION_COOKIE_TOKEN  = "MMAUTHTOKEN"
-	SESSION_CACHE_SIZE    = 10000
-	SESSION_PROP_PLATFORM = "platform"
-	SESSION_PROP_OS       = "os"
-	SESSION_PROP_BROWSER  = "browser"
+	SESSION_COOKIE_TOKEN              = "MMAUTHTOKEN"
+	SESSION_COOKIE_USER               = "MMUSERID"
+	SESSION_CACHE_SIZE                = 35000
+	SESSION_PROP_PLATFORM             = "platform"
+	SESSION_PROP_OS                   = "os"
+	SESSION_PROP_BROWSER              = "browser"
+	SESSION_PROP_TYPE                 = "type"
+	SESSION_PROP_USER_ACCESS_TOKEN_ID = "user_access_token_id"
+	SESSION_TYPE_USER_ACCESS_TOKEN    = "UserAccessToken"
+	SESSION_ACTIVITY_TIMEOUT          = 1000 * 60 * 5 // 5 minutes
+	SESSION_USER_ACCESS_TOKEN_EXPIRY  = 100 * 365     // 100 years
 )
 
 type Session struct {
@@ -30,24 +37,20 @@ type Session struct {
 	TeamMembers    []*TeamMember `json:"team_members" db:"-"`
 }
 
+func (me *Session) DeepCopy() *Session {
+	copy := *me
+	return &copy
+}
+
 func (me *Session) ToJson() string {
-	b, err := json.Marshal(me)
-	if err != nil {
-		return ""
-	} else {
-		return string(b)
-	}
+	b, _ := json.Marshal(me)
+	return string(b)
 }
 
 func SessionFromJson(data io.Reader) *Session {
-	decoder := json.NewDecoder(data)
-	var me Session
-	err := decoder.Decode(&me)
-	if err == nil {
-		return &me
-	} else {
-		return nil
-	}
+	var me *Session
+	json.NewDecoder(data).Decode(&me)
+	return me
 }
 
 func (me *Session) PreSave() {
@@ -55,7 +58,9 @@ func (me *Session) PreSave() {
 		me.Id = NewId()
 	}
 
-	me.Token = NewId()
+	if me.Token == "" {
+		me.Token = NewId()
+	}
 
 	me.CreateAt = GetMillis()
 	me.LastActivityAt = me.CreateAt
@@ -83,7 +88,11 @@ func (me *Session) IsExpired() bool {
 }
 
 func (me *Session) SetExpireInDays(days int) {
-	me.ExpiresAt = GetMillis() + (1000 * 60 * 60 * 24 * int64(days))
+	if me.CreateAt == 0 {
+		me.ExpiresAt = GetMillis() + (1000 * 60 * 60 * 24 * int64(days))
+	} else {
+		me.ExpiresAt = me.CreateAt + (1000 * 60 * 60 * 24 * int64(days))
+	}
 }
 
 func (me *Session) AddProp(key string, value string) {
@@ -105,6 +114,14 @@ func (me *Session) GetTeamByTeamId(teamId string) *TeamMember {
 	return nil
 }
 
+func (me *Session) IsMobileApp() bool {
+	return len(me.DeviceId) > 0
+}
+
+func (me *Session) GetUserRoles() []string {
+	return strings.Fields(me.Roles)
+}
+
 func SessionsToJson(o []*Session) string {
 	if b, err := json.Marshal(o); err != nil {
 		return "[]"
@@ -114,12 +131,7 @@ func SessionsToJson(o []*Session) string {
 }
 
 func SessionsFromJson(data io.Reader) []*Session {
-	decoder := json.NewDecoder(data)
 	var o []*Session
-	err := decoder.Decode(&o)
-	if err == nil {
-		return o
-	} else {
-		return nil
-	}
+	json.NewDecoder(data).Decode(&o)
+	return o
 }
